@@ -15,6 +15,7 @@ models/ipcl_vault_bundle.pkl と models/metrics.json を作成する
          両眼データのため、同じ患者の左右眼は必ず同じ側（学習 or 検証）に入れる
 確認   : ノートブック セル17 と同じ訓練群 / ホールドアウト群の分割を再現し、
          ノートブックの出力（訓練群 CV・ホールドアウトの指標）と一致するかを表示する
+         （この分割は照合のためだけに使い、最終モデルの学習には使わない）
 最終   : 全眼で学習し直して保存（pkl に個票データは保存しない。SVR はサポートベクター＝学習眼の
          特徴量を内部に持つため、3モデルとも線形であることを使い、アンサンブルを同じ予測になる
          係数・切片（3モデルの平均）だけの形に置き換えて保存する）
@@ -204,7 +205,7 @@ def notebook_split_check(df):
     }
 
     print('\n' + '=' * 70)
-    print('【確認】ノートブックの訓練群 / ホールドアウト群（セル17の分割）で再現')
+    print('【確認】ノートブックの訓練群 / ホールドアウト群（セル17の分割）で再現 ※照合用。最終モデルには使わない')
     print('=' * 70)
     print(f"  訓練群 {res['n_train']}眼 / {res['patients_train']}人   "
           f"ホールドアウト {res['n_holdout']}眼 / {res['patients_holdout']}人")
@@ -260,7 +261,7 @@ def main():
     Xv, yv, gv = vault_xy(df)
     Xp, yp, gp = p600_xy(df)
     print('\n' + '=' * 70)
-    print(f'【全データ】患者単位 LOOCV と最終モデル（Vault {len(yv)}眼 / 確率 {len(yp)}眼）')
+    print(f'【全症例】患者単位 LOOCV と最終モデル（全症例で学習: Vault {len(yv)}眼 / 確率 {len(yp)}眼）')
     print('=' * 70)
     v_cv = reg_metrics(yv, lopo_oof(make_ensemble, Xv, yv, gv, proba=False))
     p_cv = cls_metrics(yp, lopo_oof(make_logreg, Xp, yp, gp, proba=True))

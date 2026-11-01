@@ -5,6 +5,8 @@ Streamlit Cloud: Main file path に streamlit_app.py を指定してデプロイ
       （手元で試すなら  python -m streamlit run streamlit_app.py ）
 モデル: models/ipcl_vault_bundle.pkl（train_model.py で作成）
 """
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -16,14 +18,23 @@ st.set_page_config(page_title='IPCL Vault Predictor', page_icon='👁️', layou
 
 
 @st.cache_resource
-def get_bundle():
-    return load_bundle(DEFAULT_BUNDLE)
+def get_bundle(path, stamp):
+    """stamp（更新時刻・サイズ）を引数に含め、pkl を差し替えたら自動で読み直す
+    （Streamlit Cloud はファイル更新後もプロセスを続けるため、引数が同じだと古いモデルが残る）"""
+    return load_bundle(path)
 
 
 try:
-    B = get_bundle()
-except FileNotFoundError as e:
-    st.error(str(e))
+    _st = os.stat(DEFAULT_BUNDLE)
+    B = get_bundle(DEFAULT_BUNDLE, (_st.st_mtime_ns, _st.st_size))
+except FileNotFoundError:
+    st.error(f'モデルファイルが見つかりません: {DEFAULT_BUNDLE}\n'
+             f'train_model.py（または retrain）を実行して作成してください。')
+    st.stop()
+
+if 'p600' not in B:
+    st.error('models/ipcl_vault_bundle.pkl が古い形式です（600µm 超の確率モデルが入っていません）。'
+             'streamlit_app.py と同じ時に作った models/ipcl_vault_bundle.pkl に差し替えてください。')
     st.stop()
 
 V, P = B['vault'], B['p600']
@@ -36,8 +47,8 @@ st.caption(f'術前の測定値から、ACW より大きい最小の ICL サイ�
            'アンサンブル（SVR・Ridge・重回帰の平均）による**予測Vault**と、'
            'ロジスティック回帰による **Vault が 600µm を超える確率**を表示します')
 st.markdown(
-    f"**学習データ**: {B['n_eyes']}眼 / {B['n_patients']}人 ・ "
-    f"**予測Vault**: {V['name']}（誤差の目安 RMSE {V['cv']['RMSE'] * 1000:.0f}µm） ・ "
+    f"**学習データ**: 全症例 {B['n_eyes']}眼 / {B['n_patients']}人 ・ "
+    f"**予測Vault**: {V['name']}（誤差の目安 RMSE {V['cv']['RMSE'] * 1000:.0f}µm / MAE {V['cv']['MAE'] * 1000:.0f}µm） ・ "
     f"**600µm 超の確率**: {P['name']}（AUC {P['cv']['AUC']:.2f}）"
 )
 
@@ -131,13 +142,14 @@ with st.expander('モデルの詳細と注意事項'):
             '異なります（データを修正したため。ノートブックを再実行すると更新されます）'
 
     st.markdown(f"""
-**学習データ**: {B['data_file']} — {B['n_eyes']}眼 / {B['n_patients']}人（作成: {B['created']}）。
-全眼で学習し直した最終モデルです。
+**このアプリが使うモデル**: {B['data_file']} の **全症例 {B['n_eyes']}眼 / {B['n_patients']}人**をすべて使って学習した
+最終モデルです（訓練群・ホールドアウト群には分けていません。作成: {B['created']}）。
 
 **元の解析**: {B['source']}。特徴量は {', '.join(V['features'])}（単位 mm / 歳）、
 どちらも RobustScaler で標準化してから学習しています。
 
-**性能の推定方法**: {B['cv_method']}。両眼データのため、同じ患者の左右眼は必ず同じ側に入れて評価しています。
+**性能の推定方法**: 全症例で{B['cv_method']}を行いました（1人を外して残りの全員で学習し、外した1人を予測する、を
+全員について繰り返す）。両眼データのため、同じ患者の左右眼は必ず同じ側に入れて評価しています。
 
 - **予測Vault** — {V['params']}：R² {V['cv']['R2']:.3f}、RMSE {V['cv']['RMSE'] * 1000:.0f}µm、
   MAE {V['cv']['MAE'] * 1000:.0f}µm、±100µm 以内 {V['cv']['within_100um']:.0f}%。
@@ -146,8 +158,9 @@ with st.expander('モデルの詳細と注意事項'):
   Brier {P['cv']['Brier']:.3f}、Youden 閾値 {P['cv']['threshold'] * 100:.0f}% で感度 {P['cv']['sens']:.0f}% /
   特異度 {P['cv']['spec']:.0f}%
 
-**ノートブックとの対応**: ノートブックの訓練群（{nb['n_train']}眼）/ ホールドアウト群（{nb['n_holdout']}眼）の分割を
-再現し、{nb['notebook_output_note']}と比べています。
+**参考：ノートブックとの照合**（最終モデルには使っていません）: ノートブックは訓練群（{nb['n_train']}眼）で学習し、
+ホールドアウト群（{nb['n_holdout']}眼）で検証しています。学習の手順がノートブックと同じであることを確かめるため、
+同じ分割を再現して{nb['notebook_output_note']}と比べたのが下の表です。
 予測Vaultは{_nb_match('vault')}。600µm 超の確率は{_nb_match('p600')}。
 """)
     _groups = {'vault_train_cv': '予測Vault・訓練群CV', 'vault_holdout': '予測Vault・ホールドアウト',
@@ -155,7 +168,7 @@ with st.expander('モデルの詳細と注意事項'):
     _metric = {'R2': 'R²', 'RMSE': 'RMSE (mm)', 'MAE': 'MAE (mm)', 'AUC': 'AUC',
                'threshold': 'Youden 閾値', 'sens': '感度 (%)', 'spec': '特異度 (%)'}
     st.dataframe(pd.DataFrame([
-        {'区分': g, '指標': _metric[m], 'このモデルで再現': round(nb[k][m], 4), 'ノートブックの出力': ref}
+        {'区分': g, '指標': _metric[m], '同じ分割で再現': round(nb[k][m], 4), 'ノートブックの出力': ref}
         for k, g in _groups.items() for m, ref in nb['notebook_output'][k].items()
     ]), hide_index=True)
     st.markdown(f"""
@@ -164,6 +177,6 @@ with st.expander('モデルの詳細と注意事項'):
 予測Vaultが 600µm ちょうどでも確率が 50% になるとは限りません。両方を合わせて見てください。
 
 ---
-⚠️ **本アプリは研究目的の参考情報です。** 予測Vaultの誤差は RMSE で {V['cv']['RMSE'] * 1000:.0f}µm 程度あり、
+⚠️ **本アプリは研究目的の参考情報です。** 予測Vaultの誤差は RMSE で {V['cv']['RMSE'] * 1000:.0f}µm、MAE で {V['cv']['MAE'] * 1000:.0f}µm 程度あり、
 600µm を超える確率の判別能は AUC {P['cv']['AUC']:.2f} です。最終的なレンズ選択は必ず医師の判断で行ってください。
 """)
