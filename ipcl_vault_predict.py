@@ -1,6 +1,6 @@
 """
-IPCL Vault 予測ロジック（SVR による予測Vault ＋ ロジスティック回帰による 400–600µm 確率）
-=====================================================================================
+IPCL Vault 予測ロジック（アンサンブルによる予測Vault ＋ ロジスティック回帰による 600µm 超の確率）
+==========================================================================================
 Streamlit アプリと学習スクリプト（train_model.py）の共通部品です。
 Streamlit がなくても、コマンドラインから予測できます。
 
@@ -9,10 +9,12 @@ Streamlit がなくても、コマンドラインから予測できます。
 ACW より大きい最小の ICL サイズから 0.25mm 刻みで 5 サイズについて予測します。
 
 モデル（全データ.ipynb と同じ設定）
-  - 予測Vault        : SVR (Linear)  … セル20  RobustScaler → SVR(C=1.0, epsilon=0.05, kernel='linear')
-  - 400–600µm の確率 : LogReg        … セル22  RobustScaler → LogisticRegression(C=1.0, max_iter=1000)
+  - 予測Vault        : Ensemble … セル20  RobustScaler → SVR (Linear) + Ridge + MLR の予測の平均
+  - 600µm 超の確率   : LogReg   … セル31  RobustScaler → LogisticRegression(C=1.0, max_iter=1000)
+                                   目的変数 Vault > 0.60mm（600µm ちょうどは含まない）
   - 特徴量（共通）    : LV, ACD, size, ACW, age（単位: mm / 歳）
   モデルは sklearn の Pipeline（RobustScaler + 推定器）として保存しています。
+  アンサンブルの3モデルはどれも線形なので、係数・切片の平均（1つの線形式）として保存しています。
 """
 import argparse
 import os
@@ -57,10 +59,10 @@ def vault_label(v_mm):
 
 
 def predict_frame(bundle, X):
-    """X（FEATURES の列を持つ DataFrame）→ 予測Vault (mm) と 400–600µm の確率 (0–1)"""
+    """X（FEATURES の列を持つ DataFrame）→ 予測Vault (mm) と 600µm 超の確率 (0–1)"""
     X = X[FEATURES].astype(float)
     vault = np.asarray(bundle['vault']['model'].predict(X), dtype=float)
-    clf = bundle['p400_600']['model']
+    clf = bundle['p600']['model']
     prob = clf.predict_proba(X)[:, list(clf.classes_).index(1)]
     return vault, prob
 
@@ -87,7 +89,7 @@ def predict_eye(bundle, age, LV, ACD, ACW):
     table = pd.DataFrame({
         'ICLサイズ (mm)': [f'{s:.2f}' for s in sizes],
         '予測Vault (µm)': np.round(vaults * 1000).astype(int),
-        '400–600µm の確率 (%)': np.round(probs * 100, 1),
+        '600µm 超の確率 (%)': np.round(probs * 100, 1),
         'Vault判定': [vault_label(v) for v in vaults],
     })
 
@@ -103,7 +105,7 @@ def predict_eye(bundle, age, LV, ACD, ACW):
 
 
 def make_figure(res, title=''):
-    """サイズごとの予測Vaultと 400–600µm 確率（白背景・点プロット。文字化けを避けるためラベルは英語）"""
+    """サイズごとの予測Vaultと 600µm 超の確率（白背景・点プロット。文字化けを避けるためラベルは英語）"""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -126,7 +128,7 @@ def make_figure(res, title=''):
         a1.annotate(f'{v:.0f}', (s, v), textcoords='offset points', xytext=(0, 8), ha='center', fontsize=8)
     a1.set_ylim(min(0, vaults.min() - 100), max(1100, vaults.max() + 150))
     a1.set_ylabel('Predicted vault (um)', fontweight='bold')
-    a1.set_title('Predicted vault (SVR)', fontweight='bold')
+    a1.set_title('Predicted vault (Ensemble)', fontweight='bold')
 
     a2.plot(sizes, probs, '-', color='#90A4AE', lw=1, zorder=1)
     a2.scatter(sizes, probs, s=55, color='#1565C0', edgecolor='black', lw=0.5, zorder=2)
@@ -134,7 +136,7 @@ def make_figure(res, title=''):
         a2.annotate(f'{p:.0f}%', (s, p), textcoords='offset points', xytext=(0, 8), ha='center', fontsize=8)
     a2.set_ylim(0, 100)
     a2.set_ylabel('Probability (%)', fontweight='bold')
-    a2.set_title('P(vault 400-600 um) (LogReg)', fontweight='bold')
+    a2.set_title('P(vault > 600 um) (LogReg)', fontweight='bold')
 
     if title:
         fig.suptitle(title, fontweight='bold')
@@ -147,7 +149,7 @@ def main():
         sys.stdout.reconfigure(errors='replace')
     except AttributeError:
         pass
-    ap = argparse.ArgumentParser(description='IPCL 予測Vault（SVR）/ 400–600µm 確率（LogReg）')
+    ap = argparse.ArgumentParser(description='IPCL 予測Vault（アンサンブル）/ 600µm 超の確率（LogReg）')
     ap.add_argument('--age', type=float, required=True)
     ap.add_argument('--LV', type=float, required=True)
     ap.add_argument('--ACD', type=float, required=True)
