@@ -1,11 +1,11 @@
 {
-  "created": "2026-11-02 06:36:44",
+  "created": "2026-11-02 06:59:59",
   "data_file": "IPCL9.xlsx",
   "n_eyes": 278,
   "n_patients": 142,
   "seed": 2025,
   "cv_method": "患者単位 LOOCV（Leave-One-Patient-Out）",
-  "source": "全データ.ipynb セル20（Ensemble: SVR (Linear) + Ridge + MLR）・セル31（LogReg, Vault > 0.60mm）と同じ特徴量・前処理・設定",
+  "source": "全データ.ipynb セル20（Ensemble: SVR (Linear) + Ridge + MLR）・セル31（LogReg, Vault > 0.75mm）と同じ特徴量・前処理・設定",
   "versions": {
     "python": "3.13.9",
     "numpy": "2.3.5",
@@ -35,27 +35,27 @@
       "within_100um": 52.63157894736842,
       "within_150um": 70.17543859649122
     },
-    "p600_train_cv": {
+    "high_train_cv": {
       "n": 221,
-      "prevalence": 65.15837104072398,
-      "AUC": 0.7523448773448773,
-      "Brier": 0.1864262066744979,
-      "threshold": 0.6316137788170426,
-      "sens": 73.61111111111111,
-      "spec": 67.53246753246754
+      "prevalence": 28.50678733031674,
+      "AUC": 0.7239300783604582,
+      "Brier": 0.1747742385900803,
+      "threshold": 0.28683975584865196,
+      "sens": 69.84126984126983,
+      "spec": 71.51898734177216
     },
-    "p600_holdout": {
+    "high_holdout": {
       "n": 57,
-      "prevalence": 70.17543859649122,
-      "AUC": 0.7676470588235293,
-      "Brier": 0.1639890224568467,
-      "threshold": 0.6316137788170426,
-      "sens": 75.0,
-      "spec": 64.70588235294117
+      "prevalence": 42.10526315789473,
+      "AUC": 0.6994949494949495,
+      "Brier": 0.2432667297841298,
+      "threshold": 0.28683975584865196,
+      "sens": 62.5,
+      "spec": 66.66666666666666
     },
     "matches_notebook_output": {
       "vault": false,
-      "p600": false
+      "high": true
     },
     "notebook_output": {
       "vault_train_cv": {
@@ -68,16 +68,16 @@
         "RMSE": 0.1433,
         "MAE": 0.1101
       },
-      "p600_train_cv": {
-        "AUC": 0.758,
-        "threshold": 0.62,
-        "sens": 76.6,
-        "spec": 65.8
+      "high_train_cv": {
+        "AUC": 0.724,
+        "threshold": 0.29,
+        "sens": 69.8,
+        "spec": 71.5
       },
-      "p600_holdout": {
-        "AUC": 0.741,
-        "sens": 73.2,
-        "spec": 62.5
+      "high_holdout": {
+        "AUC": 0.699,
+        "sens": 62.5,
+        "spec": 66.7
       }
     },
     "notebook_output_note": "全データ.ipynb 2026-10-30 実行時の出力（2026-11-01 に c400_600・Vault を修正する前の IPCL9.xlsx）"
@@ -164,7 +164,7 @@
       "age": -0.034002826901176
     }
   },
-  "p600": {
+  "p_high": {
     "name": "LogReg",
     "features": [
       "LV",
@@ -173,24 +173,24 @@
       "ACW",
       "age"
     ],
-    "target": "Vault2 > 0.60（Vault 600µm 超）",
-    "cut_mm": 0.6,
+    "target": "Vault2 > 0.75（Vault 750µm 超）",
+    "cut_mm": 0.75,
     "params": "RobustScaler → LogisticRegression(C=1.0, max_iter=1000)",
     "cv": {
       "n": 278,
-      "prevalence": 66.18705035971223,
-      "AUC": 0.7597710453283997,
-      "Brier": 0.17998764993146898,
-      "threshold": 0.6702242286224233,
-      "sens": 67.93478260869566,
-      "spec": 77.6595744680851
+      "prevalence": 31.294964028776977,
+      "AUC": 0.7167960522356622,
+      "Brier": 0.18935455320297082,
+      "threshold": 0.33117609163958633,
+      "sens": 66.66666666666666,
+      "spec": 72.77486910994764
     },
     "coef": {
-      "LV": -1.926666068499239,
-      "ACD": -0.46595748838975437,
-      "size": 0.8627485372910906,
-      "ACW": -0.029422860613693806,
-      "age": -0.1047830172529873
+      "LV": -0.944048326504644,
+      "ACD": -0.1181404048658171,
+      "size": 0.910551641944928,
+      "ACW": -0.49131132391170435,
+      "age": -0.6921083879792084
     }
   }
 }

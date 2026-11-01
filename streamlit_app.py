@@ -1,5 +1,5 @@
 """
-IPCL Vault 予測アプリ（予測Vault: アンサンブル / 600µm 超の確率: ロジスティック回帰）
+IPCL Vault 予測アプリ（予測Vault: アンサンブル / 750µm 超の確率: ロジスティック回帰）
 ==================================================================================
 Streamlit Cloud: Main file path に streamlit_app.py を指定してデプロイ
       （手元で試すなら  python -m streamlit run streamlit_app.py ）
@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from ipcl_vault_predict import DEFAULT_BUNDLE, N_STEPS, load_bundle, make_figure, predict_eye
+from ipcl_vault_predict import DEFAULT_BUNDLE, N_STEPS, high_label, load_bundle, make_figure, predict_eye
 
 st.set_page_config(page_title='IPCL Vault Predictor', page_icon='👁️', layout='wide')
 
@@ -32,12 +32,14 @@ except FileNotFoundError:
              f'train_model.py（または retrain）を実行して作成してください。')
     st.stop()
 
-if 'p600' not in B:
-    st.error('models/ipcl_vault_bundle.pkl が古い形式です（600µm 超の確率モデルが入っていません）。'
+if 'p_high' not in B:
+    st.error('models/ipcl_vault_bundle.pkl が古い形式です（現在の確率モデルが入っていません）。'
              'streamlit_app.py と同じ時に作った models/ipcl_vault_bundle.pkl に差し替えてください。')
     st.stop()
 
-V, P = B['vault'], B['p600']
+V, P = B['vault'], B['p_high']
+HL = high_label(B)                       # 例: '750µm 超'
+CUT = f"{P['cut_mm'] * 1000:.0f}µm"      # 例: '750µm'
 
 # ============================================================
 # ヘッダー
@@ -45,11 +47,11 @@ V, P = B['vault'], B['p600']
 st.title('👁️ IPCL Vault Predictor')
 st.caption(f'術前の測定値から、ACW より大きい最小の ICL サイズから {N_STEPS} サイズについて、'
            'アンサンブル（SVR・Ridge・重回帰の平均）による**予測Vault**と、'
-           'ロジスティック回帰による **Vault が 600µm を超える確率**を表示します')
+           f'ロジスティック回帰による **Vault が {CUT} を超える確率**を表示します')
 st.markdown(
     f"**学習データ**: 全症例 {B['n_eyes']}眼 / {B['n_patients']}人 ・ "
     f"**予測Vault**: {V['name']}（誤差の目安 RMSE {V['cv']['RMSE'] * 1000:.0f}µm / MAE {V['cv']['MAE'] * 1000:.0f}µm） ・ "
-    f"**600µm 超の確率**: {P['name']}（AUC {P['cv']['AUC']:.2f}）"
+    f"**{HL}の確率**: {P['name']}（AUC {P['cv']['AUC']:.2f}）"
 )
 
 # 学習時と実行時のライブラリのバージョン違いを検出（pickle の互換性の問題を切り分けやすくする）
@@ -111,8 +113,8 @@ st.markdown('---')
 # 結果
 # ============================================================
 if st.button('予測する', type='primary'):
-    st.caption(f"600µm 超の確率の目安: 学習データ全体で 600µm を超えたのは {P['cv']['prevalence']:.0f}%"
-               f"（600µm ちょうどは含みません）、交差検証で決めた判定の目安（Youden 閾値）は "
+    st.caption(f"{HL}の確率の目安: 学習データ全体で {CUT} を超えたのは {P['cv']['prevalence']:.0f}%"
+               f"（{CUT} ちょうどは含みません）、交差検証で決めた判定の目安（Youden 閾値）は "
                f"{P['cv']['threshold'] * 100:.0f}% です。")
     for col, (name, _, name_en) in zip(st.columns(len(eyes)), eyes):
         with col:
@@ -154,17 +156,17 @@ with st.expander('モデルの詳細と注意事項'):
 - **予測Vault** — {V['params']}：R² {V['cv']['R2']:.3f}、RMSE {V['cv']['RMSE'] * 1000:.0f}µm、
   MAE {V['cv']['MAE'] * 1000:.0f}µm、±100µm 以内 {V['cv']['within_100um']:.0f}%。
   3モデルはどれも線形なので、その平均であるアンサンブルは係数を平均した1つの線形式と同じ予測になります
-- **600µm 超の確率** — {P['params']}（目的変数 {P['target']}）：AUC {P['cv']['AUC']:.3f}、
+- **{HL}の確率** — {P['params']}（目的変数 {P['target']}）：AUC {P['cv']['AUC']:.3f}、
   Brier {P['cv']['Brier']:.3f}、Youden 閾値 {P['cv']['threshold'] * 100:.0f}% で感度 {P['cv']['sens']:.0f}% /
   特異度 {P['cv']['spec']:.0f}%
 
 **参考：ノートブックとの照合**（最終モデルには使っていません）: ノートブックは訓練群（{nb['n_train']}眼）で学習し、
 ホールドアウト群（{nb['n_holdout']}眼）で検証しています。学習の手順がノートブックと同じであることを確かめるため、
 同じ分割を再現して{nb['notebook_output_note']}と比べたのが下の表です。
-予測Vaultは{_nb_match('vault')}。600µm 超の確率は{_nb_match('p600')}。
+予測Vaultは{_nb_match('vault')}。{HL}の確率は{_nb_match('high')}。
 """)
     _groups = {'vault_train_cv': '予測Vault・訓練群CV', 'vault_holdout': '予測Vault・ホールドアウト',
-               'p600_train_cv': '600µm 超・訓練群CV', 'p600_holdout': '600µm 超・ホールドアウト'}
+               'high_train_cv': f'{HL}・訓練群CV', 'high_holdout': f'{HL}・ホールドアウト'}
     _metric = {'R2': 'R²', 'RMSE': 'RMSE (mm)', 'MAE': 'MAE (mm)', 'AUC': 'AUC',
                'threshold': 'Youden 閾値', 'sens': '感度 (%)', 'spec': '特異度 (%)'}
     st.dataframe(pd.DataFrame([
@@ -172,11 +174,11 @@ with st.expander('モデルの詳細と注意事項'):
         for k, g in _groups.items() for m, ref in nb['notebook_output'][k].items()
     ]), hide_index=True)
     st.markdown(f"""
-**確率の読み方の注意**: 予測Vaultと 600µm 超の確率は別々に学習したモデルです。どちらもサイズを大きくすると
+**確率の読み方の注意**: 予測Vaultと {HL}の確率は別々に学習したモデルです。どちらもサイズを大きくすると
 上がります（係数の符号: 予測Vault size {V['coef']['size']:+.3f}、確率 size {P['coef']['size']:+.2f}）が、
-予測Vaultが 600µm ちょうどでも確率が 50% になるとは限りません。両方を合わせて見てください。
+予測Vaultが {CUT} ちょうどでも確率が 50% になるとは限りません。両方を合わせて見てください。
 
 ---
 ⚠️ **本アプリは研究目的の参考情報です。** 予測Vaultの誤差は RMSE で {V['cv']['RMSE'] * 1000:.0f}µm、MAE で {V['cv']['MAE'] * 1000:.0f}µm 程度あり、
-600µm を超える確率の判別能は AUC {P['cv']['AUC']:.2f} です。最終的なレンズ選択は必ず医師の判断で行ってください。
+{CUT} を超える確率の判別能は AUC {P['cv']['AUC']:.2f} です。最終的なレンズ選択は必ず医師の判断で行ってください。
 """)
