@@ -1,0 +1,167 @@
+{
+  "created": "2026-11-01 12:57:08",
+  "data_file": "IPCL9.xlsx",
+  "n_eyes": 278,
+  "n_patients": 142,
+  "seed": 2025,
+  "cv_method": "患者単位 LOOCV（Leave-One-Patient-Out）",
+  "source": "全データ.ipynb セル20（SVR (Linear)）・セル22（LogReg, c400_600）と同じ特徴量・前処理・設定",
+  "versions": {
+    "python": "3.13.9",
+    "numpy": "2.3.5",
+    "pandas": "2.3.3",
+    "scipy": "1.16.3",
+    "scikit-learn": "1.7.2",
+    "joblib": "1.5.2"
+  },
+  "notebook_split": {
+    "n_train": 221,
+    "n_holdout": 57,
+    "patients_train": 113,
+    "patients_holdout": 29,
+    "vault_train_cv": {
+      "n": 221,
+      "R2": 0.25418498604882134,
+      "RMSE": 0.14332068624594513,
+      "MAE": 0.10608898843367426,
+      "within_100um": 56.56108597285068,
+      "within_150um": 74.2081447963801
+    },
+    "vault_holdout": {
+      "n": 57,
+      "R2": 0.2898452436222828,
+      "RMSE": 0.14085247170842488,
+      "MAE": 0.10808230267993349,
+      "within_100um": 56.14035087719298,
+      "within_150um": 70.17543859649122
+    },
+    "p400_train_cv": {
+      "n": 221,
+      "prevalence": 31.221719457013574,
+      "AUC": 0.6849733028222732,
+      "Brier": 0.1980385611711488,
+      "threshold": 0.2718139363642125,
+      "sens": 79.71014492753623,
+      "spec": 55.26315789473685
+    },
+    "p400_holdout": {
+      "n": 57,
+      "prevalence": 26.31578947368421,
+      "AUC": 0.7238095238095238,
+      "Brier": 0.17785357300809046,
+      "threshold": 0.2718139363642125,
+      "sens": 80.0,
+      "spec": 54.761904761904766
+    },
+    "matches_notebook_output": {
+      "vault": false,
+      "p400": false
+    },
+    "notebook_output": {
+      "vault_train_cv": {
+        "R2": 0.2547,
+        "RMSE": 0.1433,
+        "MAE": 0.1061
+      },
+      "vault_holdout": {
+        "R2": 0.2891,
+        "RMSE": 0.1409,
+        "MAE": 0.1082
+      },
+      "p400_train_cv": {
+        "AUC": 0.7,
+        "threshold": 0.23,
+        "sens": 86.4,
+        "spec": 50.3
+      },
+      "p400_holdout": {
+        "AUC": 0.705,
+        "sens": 80.0,
+        "spec": 54.8
+      }
+    },
+    "notebook_output_note": "全データ.ipynb 2026-10-30 実行時の出力（2026-11-01 に c400_600・Vault を修正する前の IPCL9.xlsx）"
+  },
+  "feature_ranges": {
+    "LV": {
+      "min": -0.682,
+      "max": 0.55,
+      "median": -0.1
+    },
+    "ACD": {
+      "min": 2.8,
+      "max": 3.98,
+      "median": 3.22
+    },
+    "size": {
+      "min": 11.25,
+      "max": 13.5,
+      "median": 12.5
+    },
+    "ACW": {
+      "min": 10.93,
+      "max": 13.09,
+      "median": 11.78
+    },
+    "age": {
+      "min": 20.0,
+      "max": 55.0,
+      "median": 36.0
+    }
+  },
+  "vault": {
+    "name": "SVR (Linear)",
+    "features": [
+      "LV",
+      "ACD",
+      "size",
+      "ACW",
+      "age"
+    ],
+    "target": "Vault2 (mm)",
+    "params": "RobustScaler → SVR(C=1.0, epsilon=0.05, kernel=\"linear\")",
+    "cv": {
+      "n": 278,
+      "R2": 0.25395949389655126,
+      "RMSE": 0.1437676428253808,
+      "MAE": 0.10758648010593745,
+      "within_100um": 55.39568345323741,
+      "within_150um": 73.02158273381295
+    },
+    "coef": {
+      "LV": -0.11428808436355331,
+      "ACD": -0.014962714139994837,
+      "size": 0.09489890927360767,
+      "ACW": -0.05512111606119225,
+      "age": -0.027987575503787276
+    }
+  },
+  "p400_600": {
+    "name": "LogReg",
+    "features": [
+      "LV",
+      "ACD",
+      "size",
+      "ACW",
+      "age"
+    ],
+    "target": "c400_600 == 1（Vault 400–600µm）",
+    "params": "RobustScaler → LogisticRegression(C=1.0, max_iter=1000)",
+    "cv": {
+      "n": 278,
+      "prevalence": 30.215827338129497,
+      "AUC": 0.6977172312223858,
+      "Brier": 0.1921425837540492,
+      "threshold": 0.26737265040112257,
+      "sens": 76.19047619047619,
+      "spec": 58.24742268041238
+    },
+    "coef": {
+      "LV": 1.3343968341407069,
+      "ACD": 0.5505745398251676,
+      "size": -0.5701612411031146,
+      "ACW": -0.22564954782833913,
+      "age": 0.3408126104348172
+    }
+  }
+}

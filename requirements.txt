@@ -1,0 +1,18 @@
+# アプリの実行に必要なものだけを入れています（モデルの学習には requirements-train.txt を使用）
+#
+# バージョンを固定するのは、学習済みモデル（models/ipcl_vault_bundle.pkl）の読み込みに
+# 関わるライブラリだけです。いずれも Python 3.14 に対応した版を指定しています。
+#   ※ scikit-learn 1.6.1 は Python 3.14 用のパッケージが無く、Streamlit Cloud 上で
+#     ソースからのビルドが走って起動に失敗するため、1.7.2 を使います
+#     （models/ipcl_vault_bundle.pkl も scikit-learn 1.7.2 で作成しています）。
+numpy==2.3.5
+pandas==2.3.3
+scipy==1.16.3
+scikit-learn==1.7.2
+joblib==1.5.2
+threadpoolctl==3.5.0
+
+# 画面・図（バージョンは固定しない）
+# Streamlit Cloud は Streamlit をプラットフォーム側で管理しているため、固定すると起動に失敗することがあります。
+streamlit
+matplotlib

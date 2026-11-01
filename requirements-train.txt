@@ -1,0 +1,7 @@
+# モデルを学習し直すとき（train_model.py）だけに必要なライブラリです。
+# Streamlit Cloud では使いません。
+#
+#   pip install -r requirements-train.txt
+#
+-r requirements.txt
+openpyxl==3.1.5
