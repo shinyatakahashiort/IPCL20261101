@@ -10,8 +10,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from ipcl_vault_predict import (DEFAULT_BUNDLE, SIZE_GRID, VAULT_NARROW, VAULT_RANGE, load_bundle,
-                                make_figure, predict_eye)
+from ipcl_vault_predict import DEFAULT_BUNDLE, N_STEPS, load_bundle, make_figure, predict_eye
 
 st.set_page_config(page_title='IPCL Vault Predictor', page_icon='👁️', layout='wide')
 
@@ -33,8 +32,8 @@ V, P = B['vault'], B['p400_600']
 # ヘッダー
 # ============================================================
 st.title('👁️ IPCL Vault Predictor')
-st.caption('術前の測定値と ICL サイズから、SVR による**予測Vault**と、'
-           'ロジスティック回帰による **Vault が 400–600µm に入る確率**を表示します')
+st.caption(f'術前の測定値から、ACW より大きい最小の ICL サイズから {N_STEPS} サイズについて、'
+           'SVR による**予測Vault**と、ロジスティック回帰による **Vault が 400–600µm に入る確率**を表示します')
 st.markdown(
     f"**学習データ**: {B['n_eyes']}眼 / {B['n_patients']}人 ・ "
     f"**予測Vault**: {V['name']}（誤差の目安 RMSE {V['cv']['RMSE'] * 1000:.0f}µm） ・ "
@@ -61,8 +60,6 @@ st.markdown('---')
 # 入力
 # ============================================================
 RNG = B['feature_ranges']
-SIZES = [f'{s:.2f}' for s in SIZE_GRID]
-SIZE_DEFAULT = SIZES.index(f"{round(RNG['size']['median'] / 0.25) * 0.25:.2f}")
 
 
 def num_input(label, name, key, step, fmt):
@@ -94,7 +91,6 @@ for col, (name, k, _) in zip(st.columns(len(eyes)), eyes):
             'LV': num_input('LV — Lens Vault (mm)', 'LV', f'lv{k}', 0.01, '%.3f'),
             'ACD': num_input('ACD — Anterior Chamber Depth (mm)', 'ACD', f'acd{k}', 0.01, '%.2f'),
             'ACW': num_input('ACW — Anterior Chamber Width (mm)', 'ACW', f'acw{k}', 0.01, '%.2f'),
-            'size': float(st.selectbox('ICL サイズ (mm)', SIZES, index=SIZE_DEFAULT, key=f'size{k}')),
         }
 
 st.markdown('---')
@@ -103,38 +99,22 @@ st.markdown('---')
 # 結果
 # ============================================================
 if st.button('予測する', type='primary'):
+    st.caption(f"400–600µm の確率の目安: 学習データ全体で 400–600µm に入ったのは {P['cv']['prevalence']:.0f}%、"
+               f"交差検証で決めた判定の目安（Youden 閾値）は {P['cv']['threshold'] * 100:.0f}% です。"
+               f"確率はサイズが小さいほど高く出るため、予測Vaultと合わせて見てください。")
     for col, (name, _, name_en) in zip(st.columns(len(eyes)), eyes):
         with col:
             st.subheader(f'{name} の結果')
             v = inputs[name]
-            res = predict_eye(B, age, v['LV'], v['ACD'], v['ACW'], v['size'])
-            rv, rp = res['vault'], res['prob']
-
-            # 両眼表示だと幅が狭く数値が切れるため、metric は横に並べず縦に置く
-            st.metric(f"予測Vault（{V['name']}）", f'{rv * 1000:.0f} µm')
-            st.metric(f"400–600µm に入る確率（{P['name']}）", f'{rp * 100:.0f} %')
-            st.caption(f"サイズ {res['size']:.2f} mm のときの予測。学習データ全体で 400–600µm に入ったのは "
-                       f"{P['cv']['prevalence']:.0f}%、交差検証で決めた判定の目安（Youden 閾値）は "
-                       f"{P['cv']['threshold'] * 100:.0f}% です。")
-
-            if VAULT_NARROW[0] <= rv <= VAULT_NARROW[1]:
-                st.success('予測Vaultは狭義の適正域（400–600µm）です。')
-            elif VAULT_RANGE[0] <= rv <= VAULT_RANGE[1]:
-                st.info('予測Vaultは広義の適正域（250–750µm）です。')
-            elif rv < VAULT_RANGE[0]:
-                st.warning('予測Vaultが低めです（<250µm）。')
-            else:
-                st.warning('予測Vaultが高めです（>750µm）。')
-
+            res = predict_eye(B, age, v['LV'], v['ACD'], v['ACW'])
+            sizes = res['sizes']
+            st.markdown(f"ACW {v['ACW']:.2f} mm → **{sizes[0]:.2f}〜{sizes[-1]:.2f} mm** の {len(sizes)} サイズ")
+            st.dataframe(res['table'], hide_index=True)
             for w in res['warnings']:
                 st.warning(w)
-
-            st.caption(f"ACW {v['ACW']:.2f} mm → 比較のため **{res['lower_size']:.2f} mm 以上** の"
-                       f"サイズと入力サイズ（◀）を並べています")
             fig = make_figure(res, name_en)
             st.pyplot(fig)
             plt.close(fig)
-            st.dataframe(res['table'], hide_index=True)
 else:
     st.info('左のサイドバーと上の入力欄を埋めて「予測する」を押してください。')
 

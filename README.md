@@ -1,11 +1,11 @@
 # IPCL Vault Predictor（SVR / LogReg）— Streamlit Cloud 版
 
-術前の測定値（年齢・LV・ACD・ACW）と ICL サイズから、
+術前の測定値（年齢・LV・ACD・ACW）から、ACW より大きい最小の ICL サイズから 0.25mm 刻みで 5 サイズについて、
 
 - **予測Vault**（SVR (Linear)）
 - **Vault が 400–600µm に入る確率**（ロジスティック回帰）
 
-を表示するウェブアプリです。比較のため、ACW より大きい候補サイズごとの値も並べて表示します。
+を表示するウェブアプリです。
 
 既存の `IPCL_Streamlit_Cloud`（サイズ推奨アプリ）とは別のアプリです。**別の GitHub リポジトリ**にして
 デプロイしてください（同じリポジトリに入れると `streamlit_app.py` が上書きされます）。

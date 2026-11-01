@@ -4,7 +4,9 @@ IPCL Vault 予測ロジック（SVR による予測Vault ＋ ロジスティッ�
 Streamlit アプリと学習スクリプト（train_model.py）の共通部品です。
 Streamlit がなくても、コマンドラインから予測できます。
 
-    python ipcl_vault_predict.py --age 35 --LV -0.12 --ACD 3.25 --ACW 11.75 --size 12.50
+    python ipcl_vault_predict.py --age 35 --LV -0.12 --ACD 3.25 --ACW 11.75
+
+ACW より大きい最小の ICL サイズから 0.25mm 刻みで 5 サイズについて予測します。
 
 モデル（全データ.ipynb と同じ設定）
   - 予測Vault        : SVR (Linear)  … セル20  RobustScaler → SVR(C=1.0, epsilon=0.05, kernel='linear')
@@ -26,7 +28,7 @@ DEFAULT_BUNDLE = os.path.join(HERE, 'models', 'ipcl_vault_bundle.pkl')
 FEATURES = ['LV', 'ACD', 'size', 'ACW', 'age']           # ノートブックと同じ列の順番
 SIZE_GRID = np.round(np.arange(11.00, 14.01, 0.25), 2)   # ICL サイズ候補
 STEP_MM = 0.25
-N_STEPS = 5                      # 比較表: ACW より大きい最小サイズ 〜 その +1.00mm
+N_STEPS = 5                      # 表示するサイズ: ACW より大きい最小サイズ 〜 その +1.00mm
 VAULT_RANGE = (0.25, 0.75)       # 広義の適正 Vault (mm)
 VAULT_NARROW = (0.40, 0.60)      # 狭義の適正 Vault (mm)
 
@@ -63,29 +65,22 @@ def predict_frame(bundle, X):
     return vault, prob
 
 
-def check_inputs(bundle, age, LV, ACD, ACW, size):
+def check_inputs(bundle, age, LV, ACD, ACW):
     """学習データの範囲外の入力を知らせる"""
     msgs = []
-    for name, v in [('age', age), ('LV', LV), ('ACD', ACD), ('ACW', ACW), ('size', size)]:
+    for name, v in [('age', age), ('LV', LV), ('ACD', ACD), ('ACW', ACW)]:
         r = bundle['feature_ranges'][name]
         if not (r['min'] <= float(v) <= r['max']):
             msgs.append(f'{name} = {float(v):g} は学習データの範囲（{r["min"]:g}〜{r["max"]:g}）の外です。'
                         f'予測の信頼性が下がります。')
-    if float(size) <= float(ACW):
-        msgs.append(f'サイズ {float(size):.2f}mm が ACW {float(ACW):.2f}mm 以下です'
-                    f'（学習データでは全眼で サイズ > ACW）。')
     return msgs
 
 
-def predict_eye(bundle, age, LV, ACD, ACW, size):
-    """1眼分の予測。入力サイズの結果と、ACW より大きい候補サイズごとの比較表を返す"""
-    size = round(float(size), 2)
-    x = pd.DataFrame([{'LV': LV, 'ACD': ACD, 'size': size, 'ACW': ACW, 'age': age}])
-    vault, prob = predict_frame(bundle, x)
-
+def predict_eye(bundle, age, LV, ACD, ACW):
+    """1眼分の予測。ACW より大きい最小サイズから 5 サイズの予測Vaultと確率を返す"""
     lower = lower_size(ACW)
     sizes = np.round(lower + STEP_MM * np.arange(N_STEPS), 2)
-    sizes = np.unique(np.append(sizes[sizes <= SIZE_GRID.max()], size))
+    sizes = sizes[sizes <= SIZE_GRID.max()]
     grid = pd.DataFrame({'LV': LV, 'ACD': ACD, 'size': sizes, 'ACW': ACW, 'age': age})
     vaults, probs = predict_frame(bundle, grid)
 
@@ -94,12 +89,16 @@ def predict_eye(bundle, age, LV, ACD, ACW, size):
         '予測Vault (µm)': np.round(vaults * 1000).astype(int),
         '400–600µm の確率 (%)': np.round(probs * 100, 1),
         'Vault判定': [vault_label(v) for v in vaults],
-        '入力サイズ': ['◀' if s == size else '' for s in sizes],
     })
 
-    warnings_ = check_inputs(bundle, age, LV, ACD, ACW, size)
-    return {'size': size, 'vault': float(vault[0]), 'prob': float(prob[0]),
-            'table': table, 'sizes': sizes, 'vaults': vaults, 'probs': probs,
+    warnings_ = check_inputs(bundle, age, LV, ACD, ACW)
+    r = bundle['feature_ranges']['size']
+    outside = [f'{s:.2f}' for s in sizes if s < r['min'] or s > r['max']]
+    if outside:
+        warnings_.append(f'サイズ {", ".join(outside)}mm は学習データに無いサイズです'
+                         f'（学習データは {r["min"]:.2f}〜{r["max"]:.2f}mm）。参考程度にしてください。')
+
+    return {'table': table, 'sizes': sizes, 'vaults': vaults, 'probs': probs,
             'lower_size': lower, 'warnings': warnings_}
 
 
@@ -110,7 +109,6 @@ def make_figure(res, title=''):
     import matplotlib.pyplot as plt
 
     sizes, vaults, probs = res['sizes'], res['vaults'] * 1000, res['probs'] * 100
-    sel = sizes == res['size']
 
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(9, 3.4), facecolor='white')
     for ax in (a1, a2):
@@ -123,8 +121,7 @@ def make_figure(res, title=''):
     a1.axhspan(VAULT_RANGE[0] * 1000, VAULT_RANGE[1] * 1000, color='#4CAF50', alpha=0.10, lw=0)
     a1.axhspan(VAULT_NARROW[0] * 1000, VAULT_NARROW[1] * 1000, color='#4CAF50', alpha=0.20, lw=0)
     a1.plot(sizes, vaults, '-', color='#90A4AE', lw=1, zorder=1)
-    a1.scatter(sizes[~sel], vaults[~sel], s=55, color='#1565C0', edgecolor='black', lw=0.5, zorder=2)
-    a1.scatter(sizes[sel], vaults[sel], s=110, color='#E91E63', edgecolor='black', lw=0.8, zorder=3)
+    a1.scatter(sizes, vaults, s=55, color='#1565C0', edgecolor='black', lw=0.5, zorder=2)
     for s, v in zip(sizes, vaults):
         a1.annotate(f'{v:.0f}', (s, v), textcoords='offset points', xytext=(0, 8), ha='center', fontsize=8)
     a1.set_ylim(min(0, vaults.min() - 100), max(1100, vaults.max() + 150))
@@ -132,8 +129,7 @@ def make_figure(res, title=''):
     a1.set_title('Predicted vault (SVR)', fontweight='bold')
 
     a2.plot(sizes, probs, '-', color='#90A4AE', lw=1, zorder=1)
-    a2.scatter(sizes[~sel], probs[~sel], s=55, color='#1565C0', edgecolor='black', lw=0.5, zorder=2)
-    a2.scatter(sizes[sel], probs[sel], s=110, color='#E91E63', edgecolor='black', lw=0.8, zorder=3)
+    a2.scatter(sizes, probs, s=55, color='#1565C0', edgecolor='black', lw=0.5, zorder=2)
     for s, p in zip(sizes, probs):
         a2.annotate(f'{p:.0f}%', (s, p), textcoords='offset points', xytext=(0, 8), ha='center', fontsize=8)
     a2.set_ylim(0, 100)
@@ -156,13 +152,11 @@ def main():
     ap.add_argument('--LV', type=float, required=True)
     ap.add_argument('--ACD', type=float, required=True)
     ap.add_argument('--ACW', type=float, required=True)
-    ap.add_argument('--size', type=float, required=True)
     ap.add_argument('--bundle', default=DEFAULT_BUNDLE)
     a = ap.parse_args()
 
-    res = predict_eye(load_bundle(a.bundle), a.age, a.LV, a.ACD, a.ACW, a.size)
-    print(f"サイズ {res['size']:.2f}mm: 予測Vault {res['vault'] * 1000:.0f}µm"
-          f" / 400–600µm に入る確率 {res['prob'] * 100:.1f}%")
+    res = predict_eye(load_bundle(a.bundle), a.age, a.LV, a.ACD, a.ACW)
+    print(f"ACW {a.ACW:.2f}mm → {res['lower_size']:.2f}mm から {len(res['sizes'])} サイズ")
     print(res['table'].to_string(index=False))
     for w in res['warnings']:
         print('注意:', w)
