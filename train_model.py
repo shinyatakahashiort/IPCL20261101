@@ -1,5 +1,5 @@
 """
-予測Vault（アンサンブル）と 750µm 超の確率（ロジスティック回帰）の最終モデルを学習し、
+予測Vault（アンサンブル）と 750µm 以下の確率（LogReg と SVM のアンサンブル）の最終モデルを学習し、
 models/ipcl_vault_bundle.pkl と models/metrics.json を作成する
 =====================================================================
 データ : IPCL9.xlsx（既定はこのフォルダ。--data で指定可）
@@ -7,18 +7,24 @@ models/ipcl_vault_bundle.pkl と models/metrics.json を作成する
          - 予測Vault        : セル20 Ensemble（SVR (Linear) + Ridge + MLR の予測の平均 = VotingRegressor）
                                RobustScaler → SVR(C=1.0, epsilon=0.05, kernel='linear') / Ridge(alpha=1.0) /
                                LinearRegression。目的変数 Vault2 (mm)、特徴量の欠測は中央値で補完
-         - 750µm 超の確率   : セル31 LogReg（Vault > 0.75mm, high075）
-                               RobustScaler → LogisticRegression(C=1.0, max_iter=1000)
-                               目的変数 Vault2 > 0.75（750µm ちょうどは陰性）、欠測のある眼は除外
+         - 750µm 以下の確率 : セル31（Vault > 0.75mm, high075）の LogReg と SVM_RBF の確率の平均
+                               RobustScaler → LogisticRegression(C=1.0, max_iter=1000) /
+                               SVC(C=1.0, kernel='rbf', gamma=0.03, class_weight='balanced', probability=True)
+                               ノートブックと同じく Vault2 > 0.75 を陽性として学習し（欠測のある眼は除外）、
+                               アプリでは 1 − P(Vault2 > 0.75) = P(Vault2 ≤ 0.75) を表示する
+                               （750µm ちょうどは「以下」に入る。交差検証の指標も「以下」を陽性として計算）
          - 特徴量（共通）    : LV, ACD, size, ACW, age
 評価   : 患者単位 LOOCV（Leave-One-Patient-Out）
          両眼データのため、同じ患者の左右眼は必ず同じ側（学習 or 検証）に入れる
 確認   : ノートブック セル17 と同じ訓練群 / ホールドアウト群の分割を再現し、
          ノートブックの出力（訓練群 CV・ホールドアウトの指標）と一致するかを表示する
          （この分割は照合のためだけに使い、最終モデルの学習には使わない）
-最終   : 全眼で学習し直して保存（pkl に個票データは保存しない。SVR はサポートベクター＝学習眼の
-         特徴量を内部に持つため、3モデルとも線形であることを使い、アンサンブルを同じ予測になる
-         係数・切片（3モデルの平均）だけの形に置き換えて保存する）
+最終   : 全眼で学習し直して保存。予測Vault のアンサンブルは、SVR がサポートベクター＝学習眼の
+         特徴量を内部に持つため、3モデルとも線形であることを使い、同じ予測になる係数・切片
+         （3モデルの平均）だけの形に置き換えて保存する。
+         確率の SVM_RBF は非線形でこの置き換えができないため、サポートベクター（学習眼の一部の
+         LV・ACD・size・ACW・age〈RobustScaler 後〉と 750µm 超かどうか）がそのまま pkl に入る
+         （ID・Vault の値は入らない）
 
 使い方:
     python train_model.py
@@ -37,14 +43,14 @@ import pandas as pd
 
 warnings.filterwarnings('ignore')
 
-from sklearn.ensemble import VotingRegressor
+from sklearn.ensemble import VotingClassifier, VotingRegressor
 from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
 from sklearn.metrics import (brier_score_loss, mean_absolute_error, mean_squared_error, r2_score,
                              roc_auc_score, roc_curve)
 from sklearn.model_selection import LeaveOneGroupOut, StratifiedGroupKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
-from sklearn.svm import SVR
+from sklearn.svm import SVC, SVR
 
 from ipcl_vault_predict import DEFAULT_BUNDLE, FEATURES, HERE
 
@@ -53,6 +59,7 @@ HOLDOUT_RATIO = 0.2      # ノートブック セル17 と同じ
 NUMERIC_COLS = ['age', 'LV', 'ACD', 'ACW', 'size', 'Vault2']
 HIGH_CUT = 0.75         # ノートブック セル31 high075: Vault2 > 0.75 を陽性
 HIGH_LABEL = f'{HIGH_CUT * 1000:.0f}µm 超'
+WITHIN_LABEL = f'{HIGH_CUT * 1000:.0f}µm 以下'   # アプリで表示する確率（= 1 − HIGH_LABEL の確率）
 REQUIRED_COLS = ['ID', 'RL'] + NUMERIC_COLS
 
 
@@ -114,9 +121,27 @@ def make_ensemble():
                                                 ('m2', LinearRegression())]))])
 
 
+WITHIN_MEMBERS = ['LogReg', 'SVM_RBF']   # 750µm 以下の確率: セル31 の LogReg と SVM_RBF の確率の平均
+
+
 def make_logreg():
     return Pipeline([('scaler', RobustScaler()),
                      ('model', LogisticRegression(C=1.0, max_iter=1000, random_state=SEED))])
+
+
+def make_svm():
+    """セル31 の SVM_RBF と同じ"""
+    return Pipeline([('scaler', RobustScaler()),
+                     ('model', SVC(C=1.0, kernel='rbf', gamma=0.03, class_weight='balanced',
+                                   probability=True, random_state=SEED))])
+
+
+def make_prob_ensemble():
+    """LogReg と SVM_RBF の確率の単純平均（soft voting）。セル31 はモデルごとに RobustScaler を学習するが、
+    同じデータで学習するので1つの RobustScaler を共有しても同じになる"""
+    return Pipeline([('scaler', RobustScaler()),
+                     ('model', VotingClassifier([('logreg', make_logreg()['model']), ('svm', make_svm()['model'])],
+                                                voting='soft'))])
 
 
 def compact_linear_ensemble(pipe):
@@ -175,11 +200,13 @@ def cls_metrics(y, p, thr=None):
 # ノートブックの訓練群 / ホールドアウト群で再現確認（セル17・20・31）
 # ============================================================
 NOTEBOOK_OUTPUT_NOTE = '全データ.ipynb 2026-10-30 実行時の出力（2026-11-01 に c400_600・Vault を修正する前の IPCL9.xlsx）'
-NOTEBOOK_OUTPUT = {   # NOTEBOOK_OUTPUT_NOTE の出力（セル20 Ensemble・セル31 Vault > 0.75mm の LogReg）
+NOTEBOOK_OUTPUT = {   # NOTEBOOK_OUTPUT_NOTE の出力（セル20 Ensemble・セル31 Vault > 0.75mm の LogReg / SVM_RBF）
     'vault_train_cv': {'R2': 0.2387, 'RMSE': 0.1448, 'MAE': 0.1067},
     'vault_holdout': {'R2': 0.2647, 'RMSE': 0.1433, 'MAE': 0.1101},
     'high_train_cv': {'AUC': 0.724, 'threshold': 0.29, 'sens': 69.8, 'spec': 71.5},
     'high_holdout': {'AUC': 0.699, 'sens': 62.5, 'spec': 66.7},
+    'svm_train_cv': {'AUC': 0.713, 'threshold': 0.26, 'sens': 71.4, 'spec': 67.7},
+    'svm_holdout': {'AUC': 0.662, 'sens': 62.5, 'spec': 57.6},
 }
 
 
@@ -195,6 +222,7 @@ def notebook_split_check(df):
     Xp_ho, yp_ho, _ = high_xy(d_ho)
 
     p_cv = cls_metrics(yp, lopo_oof(make_logreg, Xp, yp, gp, proba=True))
+    s_cv = cls_metrics(yp, lopo_oof(make_svm, Xp, yp, gp, proba=True))
     res = {
         'n_train': int(len(d_tr)), 'n_holdout': int(len(d_ho)),
         'patients_train': int(d_tr['pid'].nunique()), 'patients_holdout': int(d_ho['pid'].nunique()),
@@ -203,6 +231,8 @@ def notebook_split_check(df):
         'high_train_cv': p_cv,
         'high_holdout': cls_metrics(yp_ho, make_logreg().fit(Xp, yp).predict_proba(Xp_ho)[:, 1],
                                     thr=p_cv['threshold']),
+        'svm_train_cv': s_cv,
+        'svm_holdout': cls_metrics(yp_ho, make_svm().fit(Xp, yp).predict_proba(Xp_ho)[:, 1], thr=s_cv['threshold']),
     }
 
     print('\n' + '=' * 70)
@@ -211,10 +241,12 @@ def notebook_split_check(df):
     print(f"  訓練群 {res['n_train']}眼 / {res['patients_train']}人   "
           f"ホールドアウト {res['n_holdout']}眼 / {res['patients_holdout']}人")
     print(f'  比較対象: {NOTEBOOK_OUTPUT_NOTE}')
-    ok = {'vault': True, 'high': True}
+    ok = {'vault': True, 'high': True, 'svm': True}
     for key, cols in [('vault_train_cv', ['R2', 'RMSE', 'MAE']), ('vault_holdout', ['R2', 'RMSE', 'MAE']),
                       ('high_train_cv', ['AUC', 'threshold', 'sens', 'spec']),
-                      ('high_holdout', ['AUC', 'sens', 'spec'])]:
+                      ('high_holdout', ['AUC', 'sens', 'spec']),
+                      ('svm_train_cv', ['AUC', 'threshold', 'sens', 'spec']),
+                      ('svm_holdout', ['AUC', 'sens', 'spec'])]:
         line = []
         for c in cols:
             ref, got = NOTEBOOK_OUTPUT[key][c], res[key][c]
@@ -223,7 +255,8 @@ def notebook_split_check(df):
             ok[key.split('_')[0]] &= same
             line.append(f'{c}={got:.4f}（ノートブック {ref}）{"" if same else " ← 不一致"}')
         print(f'  {key:<15} ' + '  '.join(line))
-    for k, lbl in [('vault', '予測Vault'), ('high', f'{HIGH_LABEL}の確率')]:
+    for k, lbl in [('vault', '予測Vault'), ('high', f'{HIGH_LABEL}の確率 LogReg（ノートブックのモデル）'),
+                   ('svm', f'{HIGH_LABEL}の確率 SVM_RBF（ノートブックのモデル）')]:
         print(f"  → {lbl}: {'✅ ノートブックの出力と一致' if ok[k] else '⚠️ ノートブックの出力と異なります（データが更新された場合はノートブックの再実行が必要）'}")
     res['matches_notebook_output'] = {k: bool(v) for k, v in ok.items()}
     res['notebook_output'] = NOTEBOOK_OUTPUT
@@ -239,7 +272,7 @@ def main():
         sys.stdout.reconfigure(errors='replace')
     except AttributeError:
         pass
-    ap = argparse.ArgumentParser(description=f'IPCL 予測Vault（アンサンブル）/ {HIGH_LABEL}の確率（LogReg）の学習')
+    ap = argparse.ArgumentParser(description=f'IPCL 予測Vault（アンサンブル）/ {WITHIN_LABEL}の確率（LogReg + SVM）の学習')
     ap.add_argument('--data', default=os.path.join(HERE, 'IPCL9.xlsx'))
     ap.add_argument('--out', default=DEFAULT_BUNDLE)
     a = ap.parse_args()
@@ -250,7 +283,7 @@ def main():
 
     df = load_data(a.data)
     print('=' * 70)
-    print(f'IPCL 予測Vault（アンサンブル）/ {HIGH_LABEL}の確率（LogReg）の学習')
+    print(f'IPCL 予測Vault（アンサンブル）/ {WITHIN_LABEL}の確率（LogReg + SVM）の学習')
     print('=' * 70)
     print(f'データ: {os.path.basename(a.data)}  {len(df)}眼 / {df["pid"].nunique()}人')
     print(f'特徴量: {FEATURES}')
@@ -265,12 +298,17 @@ def main():
     print(f'【全症例】患者単位 LOOCV と最終モデル（全症例で学習: Vault {len(yv)}眼 / 確率 {len(yp)}眼）')
     print('=' * 70)
     v_cv = reg_metrics(yv, lopo_oof(make_ensemble, Xv, yv, gv, proba=False))
-    p_cv = cls_metrics(yp, lopo_oof(make_logreg, Xp, yp, gp, proba=True))
+    # 学習はノートブックと同じ「超」を陽性、評価は表示する「以下」（= 1 − 超の確率）を陽性にして計算
+    oof_m = {'LogReg': lopo_oof(make_logreg, Xp, yp, gp, proba=True),
+             'SVM_RBF': lopo_oof(make_svm, Xp, yp, gp, proba=True)}
+    member_cv = {nm: cls_metrics(1 - yp, 1 - o) for nm, o in oof_m.items()}
+    p_cv = cls_metrics(1 - yp, 1 - np.mean(list(oof_m.values()), axis=0))
     print(f"  予測Vault Ensemble    : R²={v_cv['R2']:.3f}  RMSE={v_cv['RMSE'] * 1000:.0f}µm  "
           f"MAE={v_cv['MAE'] * 1000:.0f}µm  ±100µm以内={v_cv['within_100um']:.1f}%")
-    print(f"  {HIGH_LABEL}の確率 LogReg : AUC={p_cv['AUC']:.3f}  Brier={p_cv['Brier']:.3f}  "
-          f"Youden閾値={p_cv['threshold']:.2f}（感度 {p_cv['sens']:.1f}% / 特異度 {p_cv['spec']:.1f}%）  "
-          f"陽性割合={p_cv['prevalence']:.1f}%")
+    for nm, c in {**member_cv, 'Ensemble': p_cv}.items():
+        print(f"  {WITHIN_LABEL}の確率 {nm:<9}: AUC={c['AUC']:.3f}  Brier={c['Brier']:.3f}  "
+              f"Youden閾値={c['threshold']:.2f}（感度 {c['sens']:.1f}% / 特異度 {c['spec']:.1f}%）  "
+              f"陽性割合={c['prevalence']:.1f}%")
 
     ens_fitted = make_ensemble().fit(Xv, yv)
     ens = compact_linear_ensemble(ens_fitted)
@@ -282,9 +320,17 @@ def main():
           f'予測の最大差 {diff:.1e} mm）')
     members = {nm: dict(zip(FEATURES, map(float, np.ravel(m.coef_))))
                for nm, m in zip(ENSEMBLE_MEMBERS, ens_fitted['model'].estimators_)}
-    logreg = make_logreg().fit(Xp, yp)
+    prob_ens = make_prob_ensemble().fit(Xp, yp)
+    diff = float(np.abs(prob_ens.predict_proba(Xp)[:, 1] - np.mean(
+        [m().fit(Xp, yp).predict_proba(Xp)[:, 1] for m in (make_logreg, make_svm)], axis=0)).max())
+    if diff > 1e-9:
+        raise SystemExit(f'確率のアンサンブルが LogReg と SVM_RBF の平均と一致しません（最大差 {diff:.2e}）')
+    logreg = prob_ens['model'].named_estimators_['logreg']
+    svm = prob_ens['model'].named_estimators_['svm']
+    print(f'  確率のアンサンブル = LogReg と SVM_RBF の平均（個別に学習した平均との最大差 {diff:.1e}）。'
+          f'SVM のサポートベクター {int(svm.n_support_.sum())}眼分が pkl に入ります')
     coef = {'vault_ensemble': dict(zip(FEATURES, map(float, ens['model'].coef_.ravel()))),
-            'high_logreg': dict(zip(FEATURES, map(float, logreg['model'].coef_.ravel())))}
+            'within_logreg': dict(zip(FEATURES, map(float, -logreg.coef_.ravel())))}
     print('  係数（RobustScaler 後）')
     for k, c in {**{f'  {nm}': c for nm, c in members.items()}, **coef}.items():
         print(f'    {k:<15} ' + '  '.join(f'{f}={v:+.4f}' for f, v in c.items()))
@@ -299,7 +345,7 @@ def main():
         'n_patients': int(df['pid'].nunique()),
         'seed': SEED,
         'cv_method': '患者単位 LOOCV（Leave-One-Patient-Out）',
-        'source': '全データ.ipynb セル20（Ensemble: SVR (Linear) + Ridge + MLR）・セル31（LogReg, Vault > 0.75mm）と同じ特徴量・前処理・設定',
+        'source': '全データ.ipynb セル20（Ensemble: SVR (Linear) + Ridge + MLR）・セル31（LogReg・SVM_RBF, Vault > 0.75mm）と同じ特徴量・前処理・設定',
         'versions': {'python': '.'.join(map(str, sys.version_info[:3])), 'numpy': np.__version__,
                      'pandas': pd.__version__, 'scipy': scipy.__version__,
                      'scikit-learn': sklearn.__version__, 'joblib': joblib.__version__},
@@ -309,10 +355,15 @@ def main():
                             'LinearRegression]',
                   'members': ENSEMBLE_MEMBERS, 'member_coef': members,
                   'cv': v_cv, 'coef': coef['vault_ensemble']},
-        'p_high': {'model': logreg, 'name': 'LogReg', 'features': FEATURES,
-                   'target': f'Vault2 > {HIGH_CUT:.2f}（Vault {HIGH_LABEL}）', 'cut_mm': HIGH_CUT,
-                   'params': 'RobustScaler → LogisticRegression(C=1.0, max_iter=1000)',
-                   'cv': p_cv, 'coef': coef['high_logreg']},
+        # model はノートブックと同じく Vault2 > cut_mm を陽性（クラス1）として学習。表示する確率はクラス0
+        'p_within': {'model': prob_ens, 'name': 'Ensemble (LogReg + SVM_RBF)', 'features': FEATURES,
+                     'target': f'Vault2 ≤ {HIGH_CUT:.2f}（Vault {WITHIN_LABEL}）', 'cut_mm': HIGH_CUT,
+                     'trained_as': f'ノートブック セル31 と同じく Vault2 > {HIGH_CUT:.2f} を陽性として学習し、'
+                                   f'1 − その確率（= Vault2 ≤ {HIGH_CUT:.2f} の確率）を表示',
+                     'params': 'RobustScaler → 平均[LogisticRegression(C=1.0, max_iter=1000), '
+                               'SVC(C=1.0, kernel="rbf", gamma=0.03, class_weight="balanced", probability=True)]',
+                     'members': WITHIN_MEMBERS, 'member_cv': member_cv, 'n_support_vectors': int(svm.n_support_.sum()),
+                     'cv': p_cv, 'coef': coef['within_logreg']},   # coef は LogReg の係数（「以下」の向き）
         'notebook_split': nb_check,
         # 入力チェック用の要約統計のみ（個票データは保存しない）
         'feature_ranges': {c: {'min': float(df[c].min()), 'max': float(df[c].max()),
@@ -323,9 +374,9 @@ def main():
     with open(a.out, 'wb') as f:
         pickle.dump(bundle, f)
 
-    metrics = {k: v for k, v in bundle.items() if k not in ('vault', 'p_high')}
+    metrics = {k: v for k, v in bundle.items() if k not in ('vault', 'p_within')}
     metrics['vault'] = {k: v for k, v in bundle['vault'].items() if k != 'model'}
-    metrics['p_high'] = {k: v for k, v in bundle['p_high'].items() if k != 'model'}
+    metrics['p_within'] = {k: v for k, v in bundle['p_within'].items() if k != 'model'}
     with open(os.path.join(os.path.dirname(a.out), 'metrics.json'), 'w', encoding='utf-8') as f:
         json.dump(metrics, f, ensure_ascii=False, indent=2)
 

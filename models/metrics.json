@@ -1,11 +1,11 @@
 {
-  "created": "2026-11-02 06:59:59",
+  "created": "2026-11-02 19:55:28",
   "data_file": "IPCL9.xlsx",
   "n_eyes": 278,
   "n_patients": 142,
   "seed": 2025,
   "cv_method": "患者単位 LOOCV（Leave-One-Patient-Out）",
-  "source": "全データ.ipynb セル20（Ensemble: SVR (Linear) + Ridge + MLR）・セル31（LogReg, Vault > 0.75mm）と同じ特徴量・前処理・設定",
+  "source": "全データ.ipynb セル20（Ensemble: SVR (Linear) + Ridge + MLR）・セル31（LogReg・SVM_RBF, Vault > 0.75mm）と同じ特徴量・前処理・設定",
   "versions": {
     "python": "3.13.9",
     "numpy": "2.3.5",
@@ -53,9 +53,28 @@
       "sens": 62.5,
       "spec": 66.66666666666666
     },
+    "svm_train_cv": {
+      "n": 221,
+      "prevalence": 28.50678733031674,
+      "AUC": 0.7130801687763714,
+      "Brier": 0.17806098818453733,
+      "threshold": 0.26376609196047907,
+      "sens": 71.42857142857143,
+      "spec": 67.72151898734177
+    },
+    "svm_holdout": {
+      "n": 57,
+      "prevalence": 42.10526315789473,
+      "AUC": 0.6616161616161617,
+      "Brier": 0.24775139231554982,
+      "threshold": 0.26376609196047907,
+      "sens": 62.5,
+      "spec": 57.57575757575758
+    },
     "matches_notebook_output": {
       "vault": false,
-      "high": true
+      "high": true,
+      "svm": true
     },
     "notebook_output": {
       "vault_train_cv": {
@@ -78,6 +97,17 @@
         "AUC": 0.699,
         "sens": 62.5,
         "spec": 66.7
+      },
+      "svm_train_cv": {
+        "AUC": 0.713,
+        "threshold": 0.26,
+        "sens": 71.4,
+        "spec": 67.7
+      },
+      "svm_holdout": {
+        "AUC": 0.662,
+        "sens": 62.5,
+        "spec": 57.6
       }
     },
     "notebook_output_note": "全データ.ipynb 2026-10-30 実行時の出力（2026-11-01 に c400_600・Vault を修正する前の IPCL9.xlsx）"
@@ -164,8 +194,8 @@
       "age": -0.034002826901176
     }
   },
-  "p_high": {
-    "name": "LogReg",
+  "p_within": {
+    "name": "Ensemble (LogReg + SVM_RBF)",
     "features": [
       "LV",
       "ACD",
@@ -173,24 +203,50 @@
       "ACW",
       "age"
     ],
-    "target": "Vault2 > 0.75（Vault 750µm 超）",
+    "target": "Vault2 ≤ 0.75（Vault 750µm 以下）",
     "cut_mm": 0.75,
-    "params": "RobustScaler → LogisticRegression(C=1.0, max_iter=1000)",
+    "trained_as": "ノートブック セル31 と同じく Vault2 > 0.75 を陽性として学習し、1 − その確率（= Vault2 ≤ 0.75 の確率）を表示",
+    "params": "RobustScaler → 平均[LogisticRegression(C=1.0, max_iter=1000), SVC(C=1.0, kernel=\"rbf\", gamma=0.03, class_weight=\"balanced\", probability=True)]",
+    "members": [
+      "LogReg",
+      "SVM_RBF"
+    ],
+    "member_cv": {
+      "LogReg": {
+        "n": 278,
+        "prevalence": 68.70503597122301,
+        "AUC": 0.7167960522356623,
+        "Brier": 0.18935455320297082,
+        "threshold": 0.6699383192114945,
+        "sens": 72.77486910994764,
+        "spec": 66.66666666666666
+      },
+      "SVM_RBF": {
+        "n": 278,
+        "prevalence": 68.70503597122301,
+        "AUC": 0.706806282722513,
+        "Brier": 0.19146671200036183,
+        "threshold": 0.6892830788030551,
+        "sens": 69.63350785340315,
+        "spec": 67.81609195402298
+      }
+    },
+    "n_support_vectors": 224,
     "cv": {
       "n": 278,
-      "prevalence": 31.294964028776977,
-      "AUC": 0.7167960522356622,
-      "Brier": 0.18935455320297082,
-      "threshold": 0.33117609163958633,
-      "sens": 66.66666666666666,
-      "spec": 72.77486910994764
+      "prevalence": 68.70503597122301,
+      "AUC": 0.7154119275440813,
+      "Brier": 0.18981154824386215,
+      "threshold": 0.6774900505364128,
+      "sens": 73.29842931937172,
+      "spec": 68.96551724137932
     },
     "coef": {
-      "LV": -0.944048326504644,
-      "ACD": -0.1181404048658171,
-      "size": 0.910551641944928,
-      "ACW": -0.49131132391170435,
-      "age": -0.6921083879792084
+      "LV": 0.944048326504644,
+      "ACD": 0.1181404048658171,
+      "size": -0.910551641944928,
+      "ACW": 0.49131132391170435,
+      "age": 0.6921083879792084
     }
   }
 }

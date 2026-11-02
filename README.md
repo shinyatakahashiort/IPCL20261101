@@ -1,9 +1,9 @@
-# IPCL Vault Predictor（Ensemble / LogReg）— Streamlit Cloud 版
+# IPCL Vault Predictor（Ensemble / LogReg + SVM）— Streamlit Cloud 版
 
 術前の測定値（年齢・LV・ACD・ACW）から、ACW より大きい最小の ICL サイズから 0.25mm 刻みで 5 サイズについて、
 
 - **予測Vault**（アンサンブル: SVR (Linear)・Ridge・重回帰の予測の平均）
-- **Vault が 750µm を超える確率**（ロジスティック回帰）
+- **Vault が 750µm 以下になる確率**（ロジスティック回帰と SVM の確率の平均）
 
 を表示するウェブアプリです。
 
@@ -20,9 +20,10 @@ Streamlit Community Cloud にデプロイすると、**URL を知っている人
 - デプロイ後に **Manage app → Settings → Sharing** で閲覧できる人を限定する（招待したメールアドレスのみ）
 - または GitHub リポジトリを **Private** にしたうえで、上記の Sharing も限定する
 
-このリポジトリに**患者データ（xlsx）は含めません**（`.gitignore` で除外済み）。
-`models/ipcl_vault_bundle.pkl` には学習済みモデルと要約統計（各変数の最小・最大・中央値）だけが入っており、
-患者ごとのデータは含まれていません（アンサンブルに含まれる SVR は本来、学習眼の測定値の一部〈サポートベクター〉を内部に持ちます。3モデルとも線形なので、同じ予測になる係数・切片〈3モデルの平均〉だけの形に置き換えて保存しています）。
+このリポジトリに**元データ（xlsx）は含めません**（`.gitignore` で除外済み）。
+`models/ipcl_vault_bundle.pkl` には学習済みモデルと要約統計（各変数の最小・最大・中央値）が入っています。
+予測Vault のアンサンブルに含まれる SVR は、3モデルとも線形なので係数・切片〈3モデルの平均〉だけの形に置き換えて保存しています。
+**ただし、確率のモデルに含まれる SVM（RBF カーネル）は、学習眼の一部〈サポートベクター, 224眼分〉の LV・ACD・ACW・サイズ・年齢（標準化後の値。元の値に戻せます）と、その眼の Vault が 750µm を超えたかどうかを内部に持ちます。ID や Vault の値そのものは含みません。リポジトリを公開のままにすると、これらの値も誰でも読める状態になります**（2026-11-02 にこの前提で公開のままとすることを決定）。
 
 ---
 
@@ -67,12 +68,12 @@ Streamlit Community Cloud にデプロイすると、**URL を知っている人
 | | ノートブック | 設定 | 患者単位 LOOCV（全データ） |
 |---|---|---|---|
 | 予測Vault | セル20 `Ensemble (SVR (Linear)+Ridge+MLR)` | RobustScaler → SVR(C=1.0, epsilon=0.05, kernel='linear')・Ridge(alpha=1.0)・LinearRegression の予測の平均、目的変数 Vault2 (mm) | R² 0.244 / RMSE 145µm / MAE 107µm |
-| 750µm 超の確率 | セル31 `LogReg`（Vault > 0.75mm） | RobustScaler → LogisticRegression(C=1.0, max_iter=1000)、目的変数 Vault2 > 0.75（750µm ちょうどは陰性） | AUC 0.717 / Youden 閾値 0.33（感度 67% / 特異度 73%） |
+| 750µm 以下の確率 | セル31 `LogReg` と `SVM_RBF`（Vault > 0.75mm）の確率の平均 | RobustScaler → LogisticRegression(C=1.0, max_iter=1000) と SVC(C=1.0, kernel='rbf', gamma=0.03, class_weight='balanced', probability=True)。ノートブックと同じく Vault2 > 0.75 を陽性として学習し、1 − その確率（= 750µm 以下になる確率。750µm ちょうどは「以下」）を表示 | AUC 0.715 / Youden 閾値 0.68（750µm 以下を陽性として感度 73% / 特異度 69%）。単独では LogReg 0.717・SVM_RBF 0.707 |
 
 - 特徴量（共通）: LV, ACD, size, ACW, age（単位 mm / 歳）。乱数シードはノートブックの GLOBAL_SEED（2025）と同じ
 - 2026-11-01 に修正した IPCL9.xlsx で学習しています（Vault: no 3 を 602→600µm、no 44 を 601→600µm に変更。
   どちらも 750µm 以下なので、750µm 超かどうかは変わりません）。c400_600 列は使いません。
-  750µm 超の確率（セル31 LogReg）は、現在のデータのままでノートブック（10/30 実行）の出力
+  確率の2モデル（セル31 LogReg・SVM_RBF, 750µm 超を陽性として学習）は、どちらも現在のデータのままでノートブック（10/30 実行）の出力
   （訓練群 CV・ホールドアウトの AUC・閾値・感度・特異度）と一致します。予測Vault（セル20 Ensemble）は
   修正前の値に戻すと出力（R²・RMSE・MAE）と一致し、アンサンブル内の SVR は `vault_ml_final.pkl` の SVR と
   予測値が完全に一致することを確認済みです。
@@ -80,7 +81,7 @@ Streamlit Community Cloud にデプロイすると、**URL を知っている人
 - モデルは **scikit-learn 1.7.2**（Python 3.13）で作成しています。Mac 版・Windows 版（scikit-learn 1.6.1）と
   全 278 眼で予測値が完全に一致することを確認済みです
 
-**確率の読み方の注意**: 予測Vaultと 750µm 超の確率は別々に学習したモデルです。どちらもサイズを大きくすると上がりますが、
+**確率の読み方の注意**: 予測Vaultと 750µm 以下の確率は別々に学習したモデルです。サイズを大きくすると予測Vaultは上がり、750µm 以下の確率は下がりますが、
 予測Vaultが 750µm ちょうどでも確率が 50% になるとは限りません。両方を合わせて見てください。
 
 ### データを更新してモデルを作り直す場合
@@ -111,4 +112,4 @@ Streamlit Cloud が自動で再起動して新しいモデルになります。�
 ---
 
 ⚠️ **本アプリは研究目的の参考情報です。** 予測Vaultの誤差は RMSE で約145µm、MAE で約107µm あり、
-750µm を超える確率の判別能は AUC 0.72 程度です。最終的なレンズ選択は必ず医師の判断で行ってください。
+750µm 以下になる確率の判別能は AUC 0.72 程度です。最終的なレンズ選択は必ず医師の判断で行ってください。
