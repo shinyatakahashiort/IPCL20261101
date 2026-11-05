@@ -1,5 +1,6 @@
 """
-IPCL Vault 予測アプリ（予測Vault: アンサンブル / 750µm 以下の確率: LogReg と SVM のアンサンブル）
+IPCL Vault 予測アプリ（予測Vault: アンサンブル / 750µm 以下の確率: LogReg と SVM のアンサンブル /
+                      400〜600µm に入る確率: ロジスティック回帰）
 ==========================================================================================
 Streamlit Cloud: Main file path に streamlit_app.py を指定してデプロイ
       （手元で試すなら  python -m streamlit run streamlit_app.py ）
@@ -12,7 +13,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from ipcl_vault_predict import DEFAULT_BUNDLE, N_STEPS, load_bundle, make_figure, predict_eye, prob_label
+from ipcl_vault_predict import (DEFAULT_BUNDLE, N_STEPS, load_bundle, make_figure, narrow_label, predict_eye,
+                                prob_label)
 
 st.set_page_config(page_title='IPCL Vault Predictor', page_icon='👁️', layout='wide')
 
@@ -32,7 +34,7 @@ except FileNotFoundError:
              f'train_model.py（または retrain）を実行して作成してください。')
     st.stop()
 
-if 'member_cv' not in B.get('p_within', {}):   # 確率がアンサンブルになる前の pkl も古い形式として扱う
+if 'member_cv' not in B.get('p_within', {}) or 'p_narrow' not in B:   # 確率モデルがそろう前の pkl は古い形式
     st.error('models/ipcl_vault_bundle.pkl が古い形式です（現在の確率モデルが入っていません）。'
              'streamlit_app.py と同じ時に作った models/ipcl_vault_bundle.pkl に差し替えてください。')
     st.stop()
@@ -40,6 +42,8 @@ if 'member_cv' not in B.get('p_within', {}):   # 確率がアンサンブルに�
 V, P = B['vault'], B['p_within']
 HL = prob_label(B)                       # 例: '750µm 以下'
 CUT = f"{P['cut_mm'] * 1000:.0f}µm"      # 例: '750µm'
+N = B['p_narrow']
+NL = narrow_label(B)                     # 例: '400〜600µm'
 
 # ============================================================
 # ヘッダー
@@ -47,11 +51,13 @@ CUT = f"{P['cut_mm'] * 1000:.0f}µm"      # 例: '750µm'
 st.title('👁️ IPCL Vault Predictor')
 st.caption(f'術前の測定値から、ACW より大きい最小の ICL サイズから {N_STEPS} サイズについて、'
            'アンサンブル（SVR・Ridge・重回帰の平均）による**予測Vault**と、'
-           f'ロジスティック回帰と SVM の平均による **Vault が {CUT} 以下になる確率**を表示します')
+           f'ロジスティック回帰と SVM の平均による **Vault が {CUT} 以下になる確率**、'
+           f'ロジスティック回帰による **Vault が {NL} に入る確率**を表示します')
 st.markdown(
     f"**学習データ**: 全症例 {B['n_eyes']}眼 / {B['n_patients']}人 ・ "
     f"**予測Vault**: {V['name']}（誤差の目安 RMSE {V['cv']['RMSE'] * 1000:.0f}µm / MAE {V['cv']['MAE'] * 1000:.0f}µm） ・ "
-    f"**{HL}の確率**: {P['name']}（AUC {P['cv']['AUC']:.2f}）"
+    f"**{HL}の確率**: {P['name']}（AUC {P['cv']['AUC']:.2f}） ・ "
+    f"**{NL}に入る確率**: {N['name']}（AUC {N['cv']['AUC']:.2f}）"
 )
 
 # 学習時と実行時のライブラリのバージョン違いを検出（pickle の互換性の問題を切り分けやすくする）
@@ -115,7 +121,9 @@ st.markdown('---')
 if st.button('予測する', type='primary'):
     st.caption(f"{HL}の確率の目安: 学習データ全体で {CUT} 以下だったのは {P['cv']['prevalence']:.0f}%"
                f"（{CUT} ちょうどを含みます。250µm 未満の低い Vault も「以下」に入ります）、"
-               f"交差検証で決めた判定の目安（Youden 閾値）は {P['cv']['threshold'] * 100:.0f}% です。")
+               f"交差検証で決めた判定の目安（Youden 閾値）は {P['cv']['threshold'] * 100:.0f}% です。"
+               f"{NL}に入る確率の目安: 学習データ全体で {NL} に入ったのは {N['cv']['prevalence']:.0f}%"
+               f"（{NL.replace('〜', '・')} ちょうどを含みます）、Youden 閾値は {N['cv']['threshold'] * 100:.0f}% です。")
     for col, (name, _, name_en) in zip(st.columns(len(eyes)), eyes):
         with col:
             st.subheader(f'{name} の結果')
@@ -160,16 +168,20 @@ with st.expander('モデルの詳細と注意事項'):
   Brier {P['cv']['Brier']:.3f}、Youden 閾値 {P['cv']['threshold'] * 100:.0f}% で感度 {P['cv']['sens']:.0f}% /
   特異度 {P['cv']['spec']:.0f}%（{HL}を陽性として計算）。単独では
   {'、'.join(f"{nm} AUC {c['AUC']:.3f}" for nm, c in P['member_cv'].items())}
+- **{NL}に入る確率** — {N['params']}（ノートブック セル22 ①狭義。目的変数 {N['target']}）：AUC {N['cv']['AUC']:.3f}、
+  Brier {N['cv']['Brier']:.3f}、Youden 閾値 {N['cv']['threshold'] * 100:.0f}% で感度 {N['cv']['sens']:.0f}% /
+  特異度 {N['cv']['spec']:.0f}%
 
 **参考：ノートブックとの照合**（最終モデルには使っていません）: ノートブックは訓練群（{nb['n_train']}眼）で学習し、
 ホールドアウト群（{nb['n_holdout']}眼）で検証しています。学習の手順がノートブックと同じであることを確かめるため、
 同じ分割を再現して{nb['notebook_output_note']}と比べたのが下の表です。
 予測Vaultは{_nb_match('vault')}。{CUT} 超の確率（ノートブックのモデル。アプリはその 1 − 確率の平均を表示）は、
-LogReg が{_nb_match('high')}。SVM_RBF も{_nb_match('svm')}。
+LogReg が{_nb_match('high')}。SVM_RBF も{_nb_match('svm')}。{NL}に入る確率（セル22 LogReg）は{_nb_match('narrow')}。
 """)
     _groups = {'vault_train_cv': '予測Vault・訓練群CV', 'vault_holdout': '予測Vault・ホールドアウト',
                'high_train_cv': f'{CUT} 超 LogReg・訓練群CV', 'high_holdout': f'{CUT} 超 LogReg・ホールドアウト',
-               'svm_train_cv': f'{CUT} 超 SVM_RBF・訓練群CV', 'svm_holdout': f'{CUT} 超 SVM_RBF・ホールドアウト'}
+               'svm_train_cv': f'{CUT} 超 SVM_RBF・訓練群CV', 'svm_holdout': f'{CUT} 超 SVM_RBF・ホールドアウト',
+               'narrow_train_cv': f'{NL} LogReg・訓練群CV', 'narrow_holdout': f'{NL} LogReg・ホールドアウト'}
     _metric = {'R2': 'R²', 'RMSE': 'RMSE (mm)', 'MAE': 'MAE (mm)', 'AUC': 'AUC',
                'threshold': 'Youden 閾値', 'sens': '感度 (%)', 'spec': '特異度 (%)'}
     st.dataframe(pd.DataFrame([
@@ -181,8 +193,11 @@ LogReg が{_nb_match('high')}。SVM_RBF も{_nb_match('svm')}。
 上がり、{HL}の確率は下がります（係数の符号: 予測Vault size {V['coef']['size']:+.3f}、確率の LogReg size {P['coef']['size']:+.2f}。
 SVM は非線形のため係数はありません）が、
 予測Vaultが {CUT} ちょうどでも確率が 50% になるとは限りません。両方を合わせて見てください。
+{NL}に入る確率も別に学習したモデルで、LogReg（線形）のため、サイズに対して一方向にしか変化しません
+（係数 size {N['coef']['size']:+.2f}：サイズを大きくすると{'上がり' if N['coef']['size'] > 0 else '下がり'}ます）。
 
 ---
 ⚠️ **本アプリは研究目的の参考情報です。** 予測Vaultの誤差は RMSE で {V['cv']['RMSE'] * 1000:.0f}µm、MAE で {V['cv']['MAE'] * 1000:.0f}µm 程度あり、
-{HL}の確率の判別能は AUC {P['cv']['AUC']:.2f} です。最終的なレンズ選択は必ず医師の判断で行ってください。
+{HL}の確率の判別能は AUC {P['cv']['AUC']:.2f}、{NL}に入る確率は AUC {N['cv']['AUC']:.2f} です。
+最終的なレンズ選択は必ず医師の判断で行ってください。
 """)

@@ -1,5 +1,6 @@
 """
-IPCL Vault 予測ロジック（アンサンブルによる予測Vault ＋ LogReg と SVM のアンサンブルによる 750µm 以下の確率）
+IPCL Vault 予測ロジック（アンサンブルによる予測Vault ＋ LogReg と SVM のアンサンブルによる 750µm 以下の確率
+                        ＋ ロジスティック回帰による 400〜600µm に入る確率）
 ====================================================================================================
 Streamlit アプリと学習スクリプト（train_model.py）の共通部品です。
 Streamlit がなくても、コマンドラインから予測できます。
@@ -15,6 +16,9 @@ ACW より大きい最小の ICL サイズから 0.25mm 刻みで 5 サイズに
                                    ノートブックと同じく Vault > 0.75mm を陽性として学習したモデルの
                                    1 − 確率（750µm ちょうどは「以下」に入る）。基準値は
                                    bundle['p_within']['cut_mm'] に保存し、表示はそこから作る
+  - 400〜600µm の確率: LogReg   … セル22  RobustScaler → LogisticRegression(C=1.0, max_iter=1000)
+                                   目的変数 c400_600 == 1（400・600µm ちょうどを含む）。範囲は
+                                   bundle['p_narrow']['range_mm'] に保存し、表示はそこから作る
   - 特徴量（共通）    : LV, ACD, size, ACW, age（単位: mm / 歳）
   モデルは sklearn の Pipeline（RobustScaler + 推定器）として保存しています。
   予測Vault の3モデルはどれも線形なので、係数・切片の平均（1つの線形式）として保存しています。
@@ -67,13 +71,22 @@ def prob_label(bundle):
     return f"{bundle['p_within']['cut_mm'] * 1000:.0f}µm 以下"
 
 
+def narrow_label(bundle):
+    """400〜600µm の確率モデルの範囲（例: '400〜600µm'）"""
+    lo, hi = bundle['p_narrow']['range_mm']
+    return f'{lo * 1000:.0f}〜{hi * 1000:.0f}µm'
+
+
 def predict_frame(bundle, X):
-    """X（FEATURES の列を持つ DataFrame）→ 予測Vault (mm) と 基準値（cut_mm）以下の確率 (0–1)"""
+    """X（FEATURES の列を持つ DataFrame）→ 予測Vault (mm)、基準値（cut_mm）以下の確率 (0–1)、
+    400〜600µm に入る確率 (0–1)"""
     X = X[FEATURES].astype(float)
     vault = np.asarray(bundle['vault']['model'].predict(X), dtype=float)
     clf = bundle['p_within']['model']   # Vault > cut_mm をクラス1として学習 → クラス0 が「以下」
     prob = clf.predict_proba(X)[:, list(clf.classes_).index(0)]
-    return vault, prob
+    nar = bundle['p_narrow']['model']   # c400_600 == 1（400〜600µm）がクラス1
+    prob_narrow = nar.predict_proba(X)[:, list(nar.classes_).index(1)]
+    return vault, prob, prob_narrow
 
 
 def check_inputs(bundle, age, LV, ACD, ACW):
@@ -93,12 +106,13 @@ def predict_eye(bundle, age, LV, ACD, ACW):
     sizes = np.round(lower + STEP_MM * np.arange(N_STEPS), 2)
     sizes = sizes[sizes <= SIZE_GRID.max()]
     grid = pd.DataFrame({'LV': LV, 'ACD': ACD, 'size': sizes, 'ACW': ACW, 'age': age})
-    vaults, probs = predict_frame(bundle, grid)
+    vaults, probs, probs_narrow = predict_frame(bundle, grid)
 
     table = pd.DataFrame({
         'ICLサイズ (mm)': [f'{s:.2f}' for s in sizes],
         '予測Vault (µm)': np.round(vaults * 1000).astype(int),
         f'{prob_label(bundle)}の確率 (%)': np.round(probs * 100, 1),
+        f'{narrow_label(bundle)}に入る確率 (%)': np.round(probs_narrow * 100, 1),
         'Vault判定': [vault_label(v) for v in vaults],
     })
 
@@ -109,20 +123,21 @@ def predict_eye(bundle, age, LV, ACD, ACW):
         warnings_.append(f'サイズ {", ".join(outside)}mm は学習データに無いサイズです'
                          f'（学習データは {r["min"]:.2f}〜{r["max"]:.2f}mm）。参考程度にしてください。')
 
-    return {'table': table, 'sizes': sizes, 'vaults': vaults, 'probs': probs,
-            'lower_size': lower, 'cut_um': bundle['p_within']['cut_mm'] * 1000, 'warnings': warnings_}
+    return {'table': table, 'sizes': sizes, 'vaults': vaults, 'probs': probs, 'probs_narrow': probs_narrow,
+            'lower_size': lower, 'cut_um': bundle['p_within']['cut_mm'] * 1000,
+            'narrow_um': tuple(v * 1000 for v in bundle['p_narrow']['range_mm']), 'warnings': warnings_}
 
 
 def make_figure(res, title=''):
-    """サイズごとの予測Vaultと 基準値以下の確率（白背景・点プロット。文字化けを避けるためラベルは英語）"""
+    """サイズごとの予測Vault・基準値以下の確率・400〜600µm に入る確率（白背景・点プロット。文字化けを避けるためラベルは英語）"""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
-    sizes, vaults, probs = res['sizes'], res['vaults'] * 1000, res['probs'] * 100
+    sizes, vaults, probs, probs_n = res['sizes'], res['vaults'] * 1000, res['probs'] * 100, res['probs_narrow'] * 100
 
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(9, 3.4), facecolor='white')
-    for ax in (a1, a2):
+    fig, (a1, a2, a3) = plt.subplots(1, 3, figsize=(13, 3.4), facecolor='white')
+    for ax in (a1, a2, a3):
         ax.set_facecolor('white')
         ax.set_xticks(sizes)
         ax.set_xticklabels([f'{s:.2f}' for s in sizes])
@@ -139,13 +154,16 @@ def make_figure(res, title=''):
     a1.set_ylabel('Predicted vault (um)', fontweight='bold')
     a1.set_title('Predicted vault (Ensemble)', fontweight='bold')
 
-    a2.plot(sizes, probs, '-', color='#90A4AE', lw=1, zorder=1)
-    a2.scatter(sizes, probs, s=55, color='#1565C0', edgecolor='black', lw=0.5, zorder=2)
-    for s, p in zip(sizes, probs):
-        a2.annotate(f'{p:.0f}%', (s, p), textcoords='offset points', xytext=(0, 8), ha='center', fontsize=8)
-    a2.set_ylim(0, 100)
-    a2.set_ylabel('Probability (%)', fontweight='bold')
-    a2.set_title(f"P(vault ≤ {res['cut_um']:.0f} um) (LogReg + SVM)", fontweight='bold')
+    lo, hi = res['narrow_um']
+    for ax, pr, ttl in [(a2, probs, f"P(vault ≤ {res['cut_um']:.0f} um) (LogReg + SVM)"),
+                        (a3, probs_n, f'P({lo:.0f}-{hi:.0f} um) (LogReg)')]:
+        ax.plot(sizes, pr, '-', color='#90A4AE', lw=1, zorder=1)
+        ax.scatter(sizes, pr, s=55, color='#1565C0', edgecolor='black', lw=0.5, zorder=2)
+        for s, p in zip(sizes, pr):
+            ax.annotate(f'{p:.0f}%', (s, p), textcoords='offset points', xytext=(0, 8), ha='center', fontsize=8)
+        ax.set_ylim(0, 100)
+        ax.set_ylabel('Probability (%)', fontweight='bold')
+        ax.set_title(ttl, fontweight='bold')
 
     if title:
         fig.suptitle(title, fontweight='bold')
@@ -158,7 +176,8 @@ def main():
         sys.stdout.reconfigure(errors='replace')
     except AttributeError:
         pass
-    ap = argparse.ArgumentParser(description='IPCL 予測Vault（アンサンブル）/ 750µm 以下の確率（LogReg + SVM）')
+    ap = argparse.ArgumentParser(description='IPCL 予測Vault（アンサンブル）/ 750µm 以下の確率（LogReg + SVM）/ '
+                                             '400〜600µm に入る確率（LogReg）')
     ap.add_argument('--age', type=float, required=True)
     ap.add_argument('--LV', type=float, required=True)
     ap.add_argument('--ACD', type=float, required=True)

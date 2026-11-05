@@ -1,5 +1,6 @@
 """
-予測Vault（アンサンブル）と 750µm 以下の確率（LogReg と SVM のアンサンブル）の最終モデルを学習し、
+予測Vault（アンサンブル）・750µm 以下の確率（LogReg と SVM のアンサンブル）・400〜600µm に入る確率（LogReg）の
+最終モデルを学習し、
 models/ipcl_vault_bundle.pkl と models/metrics.json を作成する
 =====================================================================
 データ : IPCL9.xlsx（既定はこのフォルダ。--data で指定可）
@@ -13,6 +14,9 @@ models/ipcl_vault_bundle.pkl と models/metrics.json を作成する
                                ノートブックと同じく Vault2 > 0.75 を陽性として学習し（欠測のある眼は除外）、
                                アプリでは 1 − P(Vault2 > 0.75) = P(Vault2 ≤ 0.75) を表示する
                                （750µm ちょうどは「以下」に入る。交差検証の指標も「以下」を陽性として計算）
+         - 400〜600µm の確率: セル22 ①狭義（c400_600）の LogReg
+                               RobustScaler → LogisticRegression(C=1.0, max_iter=1000)
+                               目的変数 c400_600 == 1（Vault 400〜600µm。400・600µm ちょうどを含む）、欠測のある眼は除外
          - 特徴量（共通）    : LV, ACD, size, ACW, age
 評価   : 患者単位 LOOCV（Leave-One-Patient-Out）
          両眼データのため、同じ患者の左右眼は必ず同じ側（学習 or 検証）に入れる
@@ -56,10 +60,12 @@ from ipcl_vault_predict import DEFAULT_BUNDLE, FEATURES, HERE
 
 SEED = 2025              # ノートブック セル4 の GLOBAL_SEED と同じ
 HOLDOUT_RATIO = 0.2      # ノートブック セル17 と同じ
-NUMERIC_COLS = ['age', 'LV', 'ACD', 'ACW', 'size', 'Vault2']
+NUMERIC_COLS = ['age', 'LV', 'ACD', 'ACW', 'size', 'Vault2', 'c400_600']
 HIGH_CUT = 0.75         # ノートブック セル31 high075: Vault2 > 0.75 を陽性
 HIGH_LABEL = f'{HIGH_CUT * 1000:.0f}µm 超'
 WITHIN_LABEL = f'{HIGH_CUT * 1000:.0f}µm 以下'   # アプリで表示する確率（= 1 − HIGH_LABEL の確率）
+NARROW_MM = (0.40, 0.60)  # ノートブック セル22 ①狭義: c400_600 == 1（0 = 400µm 未満, 1 = 400〜600µm, 2 = 600µm 超）
+NARROW_LABEL = f'{NARROW_MM[0] * 1000:.0f}〜{NARROW_MM[1] * 1000:.0f}µm'
 REQUIRED_COLS = ['ID', 'RL'] + NUMERIC_COLS
 
 
@@ -105,6 +111,12 @@ def high_xy(frame):
     """セル31 と同じ: 特徴量・Vault2 に欠測のある眼は除外し、Vault2 > HIGH_CUT を陽性とする"""
     frame = frame.dropna(subset=FEATURES + ['Vault2'])
     return frame[FEATURES], (frame['Vault2'] > HIGH_CUT).astype(int).to_numpy(), frame['pid'].to_numpy()
+
+
+def narrow_xy(frame):
+    """セル22 と同じ: 特徴量・c400_600・Vault2 に欠測のある眼は除外し、c400_600 == 1 を陽性とする"""
+    frame = frame.dropna(subset=FEATURES + ['c400_600', 'Vault2'])
+    return frame[FEATURES], (frame['c400_600'] == 1).astype(int).to_numpy(), frame['pid'].to_numpy()
 
 
 # ============================================================
@@ -197,17 +209,20 @@ def cls_metrics(y, p, thr=None):
 
 
 # ============================================================
-# ノートブックの訓練群 / ホールドアウト群で再現確認（セル17・20・31）
+# ノートブックの訓練群 / ホールドアウト群で再現確認（セル17・20・22・31）
 # ============================================================
 NOTEBOOK_OUTPUT_NOTE = '全データ.ipynb 2026-10-30 実行時の出力（2026-11-01 に c400_600・Vault を修正する前の IPCL9.xlsx）'
-NOTEBOOK_OUTPUT = {   # NOTEBOOK_OUTPUT_NOTE の出力（セル20 Ensemble・セル31 Vault > 0.75mm の LogReg / SVM_RBF）
+NOTEBOOK_OUTPUT = {   # NOTEBOOK_OUTPUT_NOTE の出力（セル20 Ensemble・セル31 Vault > 0.75mm の LogReg / SVM_RBF・セル22 ①狭義 LogReg）
     'vault_train_cv': {'R2': 0.2387, 'RMSE': 0.1448, 'MAE': 0.1067},
     'vault_holdout': {'R2': 0.2647, 'RMSE': 0.1433, 'MAE': 0.1101},
     'high_train_cv': {'AUC': 0.724, 'threshold': 0.29, 'sens': 69.8, 'spec': 71.5},
     'high_holdout': {'AUC': 0.699, 'sens': 62.5, 'spec': 66.7},
     'svm_train_cv': {'AUC': 0.713, 'threshold': 0.26, 'sens': 71.4, 'spec': 67.7},
     'svm_holdout': {'AUC': 0.662, 'sens': 62.5, 'spec': 57.6},
+    'narrow_train_cv': {'AUC': 0.700, 'threshold': 0.23, 'sens': 86.4, 'spec': 50.3},
+    'narrow_holdout': {'AUC': 0.705, 'sens': 80.0, 'spec': 54.8},
 }
+NOTEBOOK_DECIMALS = {'R2': 4, 'RMSE': 4, 'MAE': 4, 'AUC': 3, 'threshold': 2, 'sens': 1, 'spec': 1}   # ノートブックの表示桁
 
 
 def notebook_split_check(df):
@@ -220,9 +235,12 @@ def notebook_split_check(df):
     Xv_ho, yv_ho, _ = vault_xy(d_ho)
     Xp, yp, gp = high_xy(d_tr)
     Xp_ho, yp_ho, _ = high_xy(d_ho)
+    Xn, yn, gn = narrow_xy(d_tr)
+    Xn_ho, yn_ho, _ = narrow_xy(d_ho)
 
     p_cv = cls_metrics(yp, lopo_oof(make_logreg, Xp, yp, gp, proba=True))
     s_cv = cls_metrics(yp, lopo_oof(make_svm, Xp, yp, gp, proba=True))
+    n_cv = cls_metrics(yn, lopo_oof(make_logreg, Xn, yn, gn, proba=True))
     res = {
         'n_train': int(len(d_tr)), 'n_holdout': int(len(d_ho)),
         'patients_train': int(d_tr['pid'].nunique()), 'patients_holdout': int(d_ho['pid'].nunique()),
@@ -233,6 +251,9 @@ def notebook_split_check(df):
                                     thr=p_cv['threshold']),
         'svm_train_cv': s_cv,
         'svm_holdout': cls_metrics(yp_ho, make_svm().fit(Xp, yp).predict_proba(Xp_ho)[:, 1], thr=s_cv['threshold']),
+        'narrow_train_cv': n_cv,
+        'narrow_holdout': cls_metrics(yn_ho, make_logreg().fit(Xn, yn).predict_proba(Xn_ho)[:, 1],
+                                      thr=n_cv['threshold']),
     }
 
     print('\n' + '=' * 70)
@@ -241,22 +262,25 @@ def notebook_split_check(df):
     print(f"  訓練群 {res['n_train']}眼 / {res['patients_train']}人   "
           f"ホールドアウト {res['n_holdout']}眼 / {res['patients_holdout']}人")
     print(f'  比較対象: {NOTEBOOK_OUTPUT_NOTE}')
-    ok = {'vault': True, 'high': True, 'svm': True}
+    ok = {'vault': True, 'high': True, 'svm': True, 'narrow': True}
     for key, cols in [('vault_train_cv', ['R2', 'RMSE', 'MAE']), ('vault_holdout', ['R2', 'RMSE', 'MAE']),
                       ('high_train_cv', ['AUC', 'threshold', 'sens', 'spec']),
                       ('high_holdout', ['AUC', 'sens', 'spec']),
                       ('svm_train_cv', ['AUC', 'threshold', 'sens', 'spec']),
-                      ('svm_holdout', ['AUC', 'sens', 'spec'])]:
+                      ('svm_holdout', ['AUC', 'sens', 'spec']),
+                      ('narrow_train_cv', ['AUC', 'threshold', 'sens', 'spec']),
+                      ('narrow_holdout', ['AUC', 'sens', 'spec'])]:
         line = []
         for c in cols:
             ref, got = NOTEBOOK_OUTPUT[key][c], res[key][c]
-            tol = 0.5 * 10 ** -len(str(ref).split('.')[1]) + 1e-9   # ノートブックの表示桁の丸め分だけ許容
+            tol = 0.5 * 10 ** -NOTEBOOK_DECIMALS[c] + 1e-9   # ノートブックの表示桁の丸め分だけ許容
             same = abs(got - ref) <= tol
             ok[key.split('_')[0]] &= same
             line.append(f'{c}={got:.4f}（ノートブック {ref}）{"" if same else " ← 不一致"}')
         print(f'  {key:<15} ' + '  '.join(line))
     for k, lbl in [('vault', '予測Vault'), ('high', f'{HIGH_LABEL}の確率 LogReg（ノートブックのモデル）'),
-                   ('svm', f'{HIGH_LABEL}の確率 SVM_RBF（ノートブックのモデル）')]:
+                   ('svm', f'{HIGH_LABEL}の確率 SVM_RBF（ノートブックのモデル）'),
+                   ('narrow', f'{NARROW_LABEL}の確率 LogReg（セル22）')]:
         print(f"  → {lbl}: {'✅ ノートブックの出力と一致' if ok[k] else '⚠️ ノートブックの出力と異なります（データが更新された場合はノートブックの再実行が必要）'}")
     res['matches_notebook_output'] = {k: bool(v) for k, v in ok.items()}
     res['notebook_output'] = NOTEBOOK_OUTPUT
@@ -272,7 +296,8 @@ def main():
         sys.stdout.reconfigure(errors='replace')
     except AttributeError:
         pass
-    ap = argparse.ArgumentParser(description=f'IPCL 予測Vault（アンサンブル）/ {WITHIN_LABEL}の確率（LogReg + SVM）の学習')
+    ap = argparse.ArgumentParser(description=f'IPCL 予測Vault（アンサンブル）/ {WITHIN_LABEL}の確率（LogReg + SVM）/ '
+                                             f'{NARROW_LABEL}の確率（LogReg）の学習')
     ap.add_argument('--data', default=os.path.join(HERE, 'IPCL9.xlsx'))
     ap.add_argument('--out', default=DEFAULT_BUNDLE)
     a = ap.parse_args()
@@ -283,7 +308,7 @@ def main():
 
     df = load_data(a.data)
     print('=' * 70)
-    print(f'IPCL 予測Vault（アンサンブル）/ {WITHIN_LABEL}の確率（LogReg + SVM）の学習')
+    print(f'IPCL 予測Vault（アンサンブル）/ {WITHIN_LABEL}の確率（LogReg + SVM）/ {NARROW_LABEL}の確率（LogReg）の学習')
     print('=' * 70)
     print(f'データ: {os.path.basename(a.data)}  {len(df)}眼 / {df["pid"].nunique()}人')
     print(f'特徴量: {FEATURES}')
@@ -294,8 +319,9 @@ def main():
     # ---- 全データで交差検証 → 最終モデル ----
     Xv, yv, gv = vault_xy(df)
     Xp, yp, gp = high_xy(df)
+    Xn, yn, gn = narrow_xy(df)
     print('\n' + '=' * 70)
-    print(f'【全症例】患者単位 LOOCV と最終モデル（全症例で学習: Vault {len(yv)}眼 / 確率 {len(yp)}眼）')
+    print(f'【全症例】患者単位 LOOCV と最終モデル（全症例で学習: Vault {len(yv)}眼 / 確率 {len(yp)}眼・{len(yn)}眼）')
     print('=' * 70)
     v_cv = reg_metrics(yv, lopo_oof(make_ensemble, Xv, yv, gv, proba=False))
     # 学習はノートブックと同じ「超」を陽性、評価は表示する「以下」（= 1 − 超の確率）を陽性にして計算
@@ -303,12 +329,16 @@ def main():
              'SVM_RBF': lopo_oof(make_svm, Xp, yp, gp, proba=True)}
     member_cv = {nm: cls_metrics(1 - yp, 1 - o) for nm, o in oof_m.items()}
     p_cv = cls_metrics(1 - yp, 1 - np.mean(list(oof_m.values()), axis=0))
+    n_cv = cls_metrics(yn, lopo_oof(make_logreg, Xn, yn, gn, proba=True))
     print(f"  予測Vault Ensemble    : R²={v_cv['R2']:.3f}  RMSE={v_cv['RMSE'] * 1000:.0f}µm  "
           f"MAE={v_cv['MAE'] * 1000:.0f}µm  ±100µm以内={v_cv['within_100um']:.1f}%")
     for nm, c in {**member_cv, 'Ensemble': p_cv}.items():
         print(f"  {WITHIN_LABEL}の確率 {nm:<9}: AUC={c['AUC']:.3f}  Brier={c['Brier']:.3f}  "
               f"Youden閾値={c['threshold']:.2f}（感度 {c['sens']:.1f}% / 特異度 {c['spec']:.1f}%）  "
               f"陽性割合={c['prevalence']:.1f}%")
+    print(f"  {NARROW_LABEL}の確率 LogReg : AUC={n_cv['AUC']:.3f}  Brier={n_cv['Brier']:.3f}  "
+          f"Youden閾値={n_cv['threshold']:.2f}（感度 {n_cv['sens']:.1f}% / 特異度 {n_cv['spec']:.1f}%）  "
+          f"陽性割合={n_cv['prevalence']:.1f}%")
 
     ens_fitted = make_ensemble().fit(Xv, yv)
     ens = compact_linear_ensemble(ens_fitted)
@@ -329,8 +359,10 @@ def main():
     svm = prob_ens['model'].named_estimators_['svm']
     print(f'  確率のアンサンブル = LogReg と SVM_RBF の平均（個別に学習した平均との最大差 {diff:.1e}）。'
           f'SVM のサポートベクター {int(svm.n_support_.sum())}眼分が pkl に入ります')
+    narrow = make_logreg().fit(Xn, yn)
     coef = {'vault_ensemble': dict(zip(FEATURES, map(float, ens['model'].coef_.ravel()))),
-            'within_logreg': dict(zip(FEATURES, map(float, -logreg.coef_.ravel())))}
+            'within_logreg': dict(zip(FEATURES, map(float, -logreg.coef_.ravel()))),
+            'narrow_logreg': dict(zip(FEATURES, map(float, narrow['model'].coef_.ravel())))}
     print('  係数（RobustScaler 後）')
     for k, c in {**{f'  {nm}': c for nm, c in members.items()}, **coef}.items():
         print(f'    {k:<15} ' + '  '.join(f'{f}={v:+.4f}' for f, v in c.items()))
@@ -345,7 +377,8 @@ def main():
         'n_patients': int(df['pid'].nunique()),
         'seed': SEED,
         'cv_method': '患者単位 LOOCV（Leave-One-Patient-Out）',
-        'source': '全データ.ipynb セル20（Ensemble: SVR (Linear) + Ridge + MLR）・セル31（LogReg・SVM_RBF, Vault > 0.75mm）と同じ特徴量・前処理・設定',
+        'source': '全データ.ipynb セル20（Ensemble: SVR (Linear) + Ridge + MLR）・セル31（LogReg・SVM_RBF, Vault > 0.75mm）・'
+                  'セル22（LogReg, c400_600）と同じ特徴量・前処理・設定',
         'versions': {'python': '.'.join(map(str, sys.version_info[:3])), 'numpy': np.__version__,
                      'pandas': pd.__version__, 'scipy': scipy.__version__,
                      'scikit-learn': sklearn.__version__, 'joblib': joblib.__version__},
@@ -364,6 +397,10 @@ def main():
                                'SVC(C=1.0, kernel="rbf", gamma=0.03, class_weight="balanced", probability=True)]',
                      'members': WITHIN_MEMBERS, 'member_cv': member_cv, 'n_support_vectors': int(svm.n_support_.sum()),
                      'cv': p_cv, 'coef': coef['within_logreg']},   # coef は LogReg の係数（「以下」の向き）
+        'p_narrow': {'model': narrow, 'name': 'LogReg', 'features': FEATURES, 'range_mm': NARROW_MM,
+                     'target': f'c400_600 == 1（Vault {NARROW_LABEL}。{NARROW_LABEL.replace("〜", "・")} ちょうどを含む）',
+                     'params': 'RobustScaler → LogisticRegression(C=1.0, max_iter=1000)',
+                     'cv': n_cv, 'coef': coef['narrow_logreg']},
         'notebook_split': nb_check,
         # 入力チェック用の要約統計のみ（個票データは保存しない）
         'feature_ranges': {c: {'min': float(df[c].min()), 'max': float(df[c].max()),
@@ -374,9 +411,9 @@ def main():
     with open(a.out, 'wb') as f:
         pickle.dump(bundle, f)
 
-    metrics = {k: v for k, v in bundle.items() if k not in ('vault', 'p_within')}
-    metrics['vault'] = {k: v for k, v in bundle['vault'].items() if k != 'model'}
-    metrics['p_within'] = {k: v for k, v in bundle['p_within'].items() if k != 'model'}
+    metrics = {k: v for k, v in bundle.items() if k not in ('vault', 'p_within', 'p_narrow')}
+    for k in ('vault', 'p_within', 'p_narrow'):
+        metrics[k] = {kk: v for kk, v in bundle[k].items() if kk != 'model'}
     with open(os.path.join(os.path.dirname(a.out), 'metrics.json'), 'w', encoding='utf-8') as f:
         json.dump(metrics, f, ensure_ascii=False, indent=2)
 

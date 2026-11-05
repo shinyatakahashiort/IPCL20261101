@@ -1,11 +1,11 @@
 {
-  "created": "2026-11-02 19:55:28",
+  "created": "2026-11-05 16:33:50",
   "data_file": "IPCL9.xlsx",
   "n_eyes": 278,
   "n_patients": 142,
   "seed": 2025,
   "cv_method": "患者単位 LOOCV（Leave-One-Patient-Out）",
-  "source": "全データ.ipynb セル20（Ensemble: SVR (Linear) + Ridge + MLR）・セル31（LogReg・SVM_RBF, Vault > 0.75mm）と同じ特徴量・前処理・設定",
+  "source": "全データ.ipynb セル20（Ensemble: SVR (Linear) + Ridge + MLR）・セル31（LogReg・SVM_RBF, Vault > 0.75mm）・セル22（LogReg, c400_600）と同じ特徴量・前処理・設定",
   "versions": {
     "python": "3.13.9",
     "numpy": "2.3.5",
@@ -71,10 +71,29 @@
       "sens": 62.5,
       "spec": 57.57575757575758
     },
+    "narrow_train_cv": {
+      "n": 221,
+      "prevalence": 31.221719457013574,
+      "AUC": 0.6849733028222732,
+      "Brier": 0.1980385611711488,
+      "threshold": 0.2718139363642125,
+      "sens": 79.71014492753623,
+      "spec": 55.26315789473685
+    },
+    "narrow_holdout": {
+      "n": 57,
+      "prevalence": 26.31578947368421,
+      "AUC": 0.7238095238095238,
+      "Brier": 0.17785357300809046,
+      "threshold": 0.2718139363642125,
+      "sens": 80.0,
+      "spec": 54.761904761904766
+    },
     "matches_notebook_output": {
       "vault": false,
       "high": true,
-      "svm": true
+      "svm": true,
+      "narrow": false
     },
     "notebook_output": {
       "vault_train_cv": {
@@ -108,6 +127,17 @@
         "AUC": 0.662,
         "sens": 62.5,
         "spec": 57.6
+      },
+      "narrow_train_cv": {
+        "AUC": 0.7,
+        "threshold": 0.23,
+        "sens": 86.4,
+        "spec": 50.3
+      },
+      "narrow_holdout": {
+        "AUC": 0.705,
+        "sens": 80.0,
+        "spec": 54.8
       }
     },
     "notebook_output_note": "全データ.ipynb 2026-10-30 実行時の出力（2026-11-01 に c400_600・Vault を修正する前の IPCL9.xlsx）"
@@ -247,6 +277,38 @@
       "size": -0.910551641944928,
       "ACW": 0.49131132391170435,
       "age": 0.6921083879792084
+    }
+  },
+  "p_narrow": {
+    "name": "LogReg",
+    "features": [
+      "LV",
+      "ACD",
+      "size",
+      "ACW",
+      "age"
+    ],
+    "range_mm": [
+      0.4,
+      0.6
+    ],
+    "target": "c400_600 == 1（Vault 400〜600µm。400・600µm ちょうどを含む）",
+    "params": "RobustScaler → LogisticRegression(C=1.0, max_iter=1000)",
+    "cv": {
+      "n": 278,
+      "prevalence": 30.215827338129497,
+      "AUC": 0.6977172312223858,
+      "Brier": 0.1921425837540492,
+      "threshold": 0.26737265040112257,
+      "sens": 76.19047619047619,
+      "spec": 58.24742268041238
+    },
+    "coef": {
+      "LV": 1.3343968341407069,
+      "ACD": 0.5505745398251676,
+      "size": -0.5701612411031146,
+      "ACW": -0.22564954782833913,
+      "age": 0.3408126104348172
     }
   }
 }
