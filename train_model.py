@@ -23,6 +23,8 @@ models/ipcl_vault_bundle.pkl と models/metrics.json を作成する
                                最小サイズ）/ 0.25（0 未満は 0）。特徴量 ACW, LV, ACD, age, gap（= 最小サイズ − ACW）
                                XGBoost・CatBoost は学習後に木だけを取り出して numpy で計算する形に置き換え、
                                元のモデルと確率が一致することを確かめてから保存する（アプリに xgboost・catboost は不要）
+                               予測サイズ（アプリの★）は確率が最も高いサイズで、性能もその選び方で計算する
+                               （ノートブックとの照合だけはセル30 と同じ確率分布の中央値）
 評価   : 患者単位 LOOCV（Leave-One-Patient-Out）
          両眼データのため、同じ患者の左右眼は必ず同じ側（学習 or 検証）に入れる
 確認   : ノートブック セル17 と同じ訓練群 / ホールドアウト群の分割を再現し、
@@ -70,7 +72,7 @@ except Exception as e:   # xgboost は Mac で OpenMP（libomp）が無いと読
                      '`brew install libomp` が必要なことがあります（Anaconda の環境なら不要です）。')
 
 from ipcl_vault_predict import (DEFAULT_BUNDLE, FEATURES, HERE, SIZE_FEATURES, CatTrees, ScaledModel, StepClassifier,
-                                XGBTrees, lower_size, median_step, size_features)
+                                XGBTrees, lower_size, median_step, size_features, top_step)
 
 SEED = 2025              # ノートブック セル4 の GLOBAL_SEED と同じ
 HOLDOUT_RATIO = 0.2      # ノートブック セル17 と同じ
@@ -272,10 +274,11 @@ def random_size_inputs(df, n):
     return size_features(v['ACW'], v['LV'], v['ACD'], rng.integers(10, 91, n).astype(float))
 
 
-def size_metrics(d, P, k):
-    """セル30 の sc_metrics と同じ: 予測サイズ（確率分布の中央値）と正しいサイズの差など"""
+def size_metrics(d, P, k, pick=top_step):
+    """セル30 の sc_metrics と同じ指標: 予測サイズと正しいサイズの差など。予測サイズはアプリと同じ
+    確率が最も高い段階（pick=top_step）。ノートブックとの照合はセル30 と同じ中央値（pick=median_step）"""
     step_true = np.clip(d['step'].to_numpy(), 0, k)
-    err = np.abs(d['low'].to_numpy() + 0.25 * median_step(P) - d[SIZE_TARGET].to_numpy())
+    err = np.abs(d['low'].to_numpy() + 0.25 * pick(P) - d[SIZE_TARGET].to_numpy())
     pt = np.clip(P[np.arange(len(d)), step_true], 1e-15, 1)
     return {'n': int(len(d)), 'MAE_mm': float(err.mean()), 'exact': float((err < 1e-6).mean() * 100),
             'within025': float((err <= 0.25 + 1e-6).mean() * 100), 'logloss': float(-np.log(pt).mean()),
@@ -387,8 +390,8 @@ def notebook_split_check(df):
         'narrow_train_cv': n_cv,
         'narrow_holdout': cls_metrics(yn_ho, make_logreg().fit(Xn, yn).predict_proba(Xn_ho)[:, 1],
                                       thr=n_cv['threshold']),
-        'size_train_cv': size_metrics(s_tr, P_cv, k),
-        'size_holdout': size_metrics(s_ho, P_ho, k),
+        'size_train_cv': size_metrics(s_tr, P_cv, k, pick=median_step),   # セル30 と同じ中央値で照合
+        'size_holdout': size_metrics(s_ho, P_ho, k, pick=median_step),
     }
 
     print('\n' + '=' * 70)
@@ -565,6 +568,7 @@ def main():
                              'XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.05, subsample=0.8, '
                              'colsample_bytree=0.8), CatBoostClassifier(iterations=100, depth=3, learning_rate=0.05, '
                              'l2_leaf_reg=3.0)]',
+                   'pick': '確率が最も高いサイズ（同じ確率なら小さいサイズ）',
                    'stage_counts': {int(a): int(b) for a, b in sd['step'].value_counts().sort_index().items()},
                    'cv': size_cv, 'member_cv': size_member_cv},
         'notebook_split': nb_check,

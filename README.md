@@ -73,7 +73,7 @@ Streamlit Community Cloud にデプロイすると、**URL を知っている人
 | 予測Vault | セル20 `Ensemble (SVR (Linear)+Ridge+MLR)` | RobustScaler → SVR(C=1.0, epsilon=0.05, kernel='linear')・Ridge(alpha=1.0)・LinearRegression の予測の平均、目的変数 Vault2 (mm) | R² 0.244 / RMSE 145µm / MAE 107µm |
 | 750µm 以下の確率 | セル31 `LogReg` と `SVM_RBF`（Vault > 0.75mm）の確率の平均 | RobustScaler → LogisticRegression(C=1.0, max_iter=1000) と SVC(C=1.0, kernel='rbf', gamma=0.03, class_weight='balanced', probability=True)。ノートブックと同じく Vault2 > 0.75 を陽性として学習し、1 − その確率（= 750µm 以下になる確率。750µm ちょうどは「以下」）を表示 | AUC 0.715 / Youden 閾値 0.68（750µm 以下を陽性として感度 73% / 特異度 69%）。単独では LogReg 0.717・SVM_RBF 0.707 |
 | 400〜600µm に入る確率 | セル22 `LogReg`（①狭義 c400_600） | RobustScaler → LogisticRegression(C=1.0, max_iter=1000)、目的変数 c400_600 == 1（Vault 400〜600µm。400µm・600µm ちょうどを含む） | AUC 0.698 / Youden 閾値 0.27（感度 76% / 特異度 58%） |
-| 正しいサイズの確率 | セル30 `アンサンブル（多項ロジスティック＋多クラス XGBoost＋多クラス CatBoost）` | 各モデル RobustScaler → 分類器（LogisticRegression(C=1.0, max_iter=2000)・XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.05, subsample=0.8, colsample_bytree=0.8)・CatBoostClassifier(iterations=100, depth=3, learning_rate=0.05, l2_leaf_reg=3.0)）の確率の平均。目的変数は段階 =（正しいサイズ − ACW より大きい最小サイズ）/ 0.25、特徴量 ACW・LV・ACD・age・gap（= 最小サイズ − ACW） | 予測（確率分布の中央値）と正しいサイズの差 MAE 0.145mm / 完全一致 51% / ±0.25mm 以内 91%。単独では多項ロジスティック 0.143・XGBoost 0.153・CatBoost 0.146mm |
+| 正しいサイズの確率 | セル30 `アンサンブル（多項ロジスティック＋多クラス XGBoost＋多クラス CatBoost）` | 各モデル RobustScaler → 分類器（LogisticRegression(C=1.0, max_iter=2000)・XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.05, subsample=0.8, colsample_bytree=0.8)・CatBoostClassifier(iterations=100, depth=3, learning_rate=0.05, l2_leaf_reg=3.0)）の確率の平均。目的変数は段階 =（正しいサイズ − ACW より大きい最小サイズ）/ 0.25、特徴量 ACW・LV・ACD・age・gap（= 最小サイズ − ACW） | 予測（確率が最も高いサイズ）と正しいサイズの差 MAE 0.152mm / 完全一致 49% / ±0.25mm 以内 91%。単独では多項ロジスティック 0.155・XGBoost 0.164・CatBoost 0.148mm |
 
 - 特徴量（正しいサイズ以外の3つ）: LV, ACD, size, ACW, age（単位 mm / 歳）。乱数シードはノートブックの GLOBAL_SEED（2025）と同じ
 - 2026-11-01 に修正した IPCL9.xlsx で学習しています（Vault: no 3 を 602→600µm、no 44 を 601→600µm に変更。
@@ -86,7 +86,8 @@ Streamlit Community Cloud にデプロイすると、**URL を知っている人
   予測値が完全に一致することを確認済みです。
   正しいサイズの確率（セル30 アンサンブル）は、現在のデータのままでノートブックの出力（訓練群 CV の MAE・完全一致・±0.25mm 以内・
   LogLoss・正解サイズの確率の平均、ホールドアウトの MAE・完全一致・±0.25mm 以内）と一致し、ノートブックの使用例
-  （ホールドアウト1眼目の 5 サイズの確率）も一致することを確認済みです。
+  （ホールドアウト1眼目の 5 サイズの確率）も一致することを確認済みです。この照合だけは、ノートブックと同じく
+  確率分布の中央値（小さいサイズから足して 50% に達するサイズ）を予測サイズにしています（アプリの★は確率が最も高いサイズ）。
   アプリは全データで学習し直したモデルなので、ノートブックの（訓練群で学習した）モデルとは予測値が少し異なります
 - モデルは **scikit-learn 1.7.2**（Python 3.13）で作成しています。Mac 版・Windows 版（scikit-learn 1.6.1）と
   全 278 眼で予測値が完全に一致することを確認済みです
@@ -125,4 +126,4 @@ Streamlit Cloud が自動で再起動して新しいモデルになります。�
 
 ⚠️ **本アプリは研究目的の参考情報です。** 予測Vaultの誤差は RMSE で約145µm、MAE で約107µm あり、
 750µm 以下になる確率の判別能は AUC 0.72、400〜600µm に入る確率は AUC 0.70 程度です。
-正しいサイズの予測が実際の正しいサイズと一致したのは約 51%（±0.25mm 以内は約 91%）です。最終的なレンズ選択は必ず医師の判断で行ってください。
+正しいサイズの予測が実際の正しいサイズと一致したのは約 49%（±0.25mm 以内は約 91%）です。最終的なレンズ選択は必ず医師の判断で行ってください。

@@ -24,7 +24,8 @@ ACW より大きい最小の ICL サイズから 0.25mm 刻みで 5 サイズに
                                    目的変数は段階 =（正しいサイズ − ACW より大きい最小サイズ）/ 0.25（0〜K）。
                                    段階 0〜4 が表示する 5 サイズにそのまま対応する（5 サイズの合計 100%）。
                                    特徴量は ACW, LV, ACD, age, gap（= ACW より大きい最小サイズ − ACW）。
-                                   予測するサイズは確率分布の中央値（小さいサイズから足して 50% に達する段階）
+                                   予測するサイズ（★）は確率が最も高い段階（同じ確率なら小さいサイズ）。
+                                   ノートブック セル30 は確率分布の中央値を使うため、照合（train_model.py）だけ中央値
                                    XGBoost・CatBoost は学習後に木（分岐の特徴量・しきい値・葉の値）だけを取り出し、
                                    numpy で同じ確率を計算する形（XGBTrees / CatTrees）で保存するので、
                                    アプリの実行に xgboost・catboost は不要（学習時だけ必要）
@@ -155,8 +156,14 @@ class ScaledModel:
         return self.model.predict_proba(self.scaler.transform(X))
 
 
+def top_step(P):
+    """確率が最も高い段階（アプリの★。同じ確率なら小さい段階）"""
+    return np.argmax(np.atleast_2d(P), axis=1)
+
+
 def median_step(P):
-    """確率分布の中央値の段階（小さい段階から足して 50% に達する段階。セル30 の sc_median_class）"""
+    """確率分布の中央値の段階（小さい段階から足して 50% に達する段階。セル30 の sc_median_class。
+    ノートブックとの照合にだけ使う）"""
     return np.argmax(np.cumsum(np.atleast_2d(P), axis=1) >= 0.5 - 1e-12, axis=1)
 
 
@@ -230,7 +237,7 @@ def predict_eye(bundle, age, LV, ACD, ACW):
     grid = pd.DataFrame({'LV': LV, 'ACD': ACD, 'size': sizes, 'ACW': ACW, 'age': age})
     vaults, probs, probs_narrow = predict_frame(bundle, grid)
     P = predict_size_proba(bundle, size_features(ACW, LV, ACD, age))[0]   # 段階 0〜K = lower から 0.25mm 刻み
-    pick = int(median_step(P)[0])
+    pick = int(top_step(P)[0])
     probs_size = np.zeros(len(sizes))
     probs_size[:min(len(sizes), len(P))] = P[:len(sizes)]
 
@@ -301,7 +308,7 @@ def make_figure(res, title=''):
         ax.set_ylabel('Probability (%)', fontweight='bold')
         ax.set_title(ttl, fontweight='bold')
     k = int(np.argmin(np.abs(sizes - res['size_pick'])))
-    if abs(sizes[k] - res['size_pick']) < 1e-9:   # 正しいサイズの予測（確率分布の中央値）に印
+    if abs(sizes[k] - res['size_pick']) < 1e-9:   # 正しいサイズの予測（確率が最も高いサイズ）に印
         a4.scatter([sizes[k]], [probs_s[k]], s=170, facecolor='none', edgecolor='#C62828', lw=1.8, zorder=3)
 
     if title:
@@ -327,7 +334,7 @@ def main():
     res = predict_eye(load_bundle(a.bundle), a.age, a.LV, a.ACD, a.ACW)
     print(f"ACW {a.ACW:.2f}mm → {res['lower_size']:.2f}mm から {len(res['sizes'])} サイズ")
     print(res['table'].to_string(index=False))
-    print(f"正しいサイズの予測（確率分布の中央値）: {res['size_pick']:.2f}mm")
+    print(f"正しいサイズの予測（確率が最も高いサイズ）: {res['size_pick']:.2f}mm")
     for w in res['warnings']:
         print('注意:', w)
 

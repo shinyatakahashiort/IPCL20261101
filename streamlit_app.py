@@ -34,7 +34,8 @@ except FileNotFoundError:
              f'train_model.py（または retrain）を実行して作成してください。')
     st.stop()
 
-if 'member_cv' not in B.get('p_within', {}) or 'p_narrow' not in B or 'p_size' not in B:   # モデルがそろう前の pkl
+if ('member_cv' not in B.get('p_within', {}) or 'p_narrow' not in B or 'p_size' not in B
+        or 'pick' not in B['p_size']):   # モデルがそろう前、または★の付け方を変える前の pkl
     st.error('models/ipcl_vault_bundle.pkl が古い形式です（現在の確率モデルが入っていません）。'
              'streamlit_app.py と同じ時に作った models/ipcl_vault_bundle.pkl に差し替えてください。')
     st.stop()
@@ -128,8 +129,7 @@ if st.button('予測する', type='primary'):
                f"交差検証で決めた判定の目安（Youden 閾値）は {P['cv']['threshold'] * 100:.0f}% です。"
                f"{NL}に入る確率の目安: 学習データ全体で {NL} に入ったのは {N['cv']['prevalence']:.0f}%"
                f"（{NL.replace('〜', '・')} ちょうどを含みます）、Youden 閾値は {N['cv']['threshold'] * 100:.0f}% です。"
-               "正しいサイズの確率: 5 サイズの合計が 100% で、★ は小さいサイズから確率を足して 50% に達するサイズ"
-               "（確率分布の中央値）です。")
+               "正しいサイズの確率: 5 サイズの合計が 100% で、★ は確率が最も高いサイズです。")
     for col, (name, _, name_en) in zip(st.columns(len(eyes)), eyes):
         with col:
             st.subheader(f'{name} の結果')
@@ -138,7 +138,7 @@ if st.button('予測する', type='primary'):
             sizes = res['sizes']
             st.markdown(f"ACW {v['ACW']:.2f} mm → **{sizes[0]:.2f}〜{sizes[-1]:.2f} mm** の {len(sizes)} サイズ")
             st.dataframe(res['table'], hide_index=True)
-            st.markdown(f"正しいサイズの予測（確率分布の中央値）: **{res['size_pick']:.2f} mm**")
+            st.markdown(f"正しいサイズの予測（確率が最も高いサイズ）: **{res['size_pick']:.2f} mm**")
             for w in res['warnings']:
                 st.warning(w)
             fig = make_figure(res, name_en)
@@ -179,7 +179,7 @@ with st.expander('モデルの詳細と注意事項'):
   Brier {N['cv']['Brier']:.3f}、Youden 閾値 {N['cv']['threshold'] * 100:.0f}% で感度 {N['cv']['sens']:.0f}% /
   特異度 {N['cv']['spec']:.0f}%
 - **正しいサイズの確率** — {S['params']}（ノートブック セル30。目的変数 {S['target']}、特徴量 {', '.join(S['features'])}。
-  gap = ACW より大きい最小サイズ − ACW）：予測（確率分布の中央値）と正しいサイズの差 MAE {S['cv']['MAE_mm']:.3f}mm、
+  gap = ACW より大きい最小サイズ − ACW）：予測（確率が最も高いサイズ）と正しいサイズの差 MAE {S['cv']['MAE_mm']:.3f}mm、
   完全一致 {S['cv']['exact']:.1f}%、±0.25mm 以内 {S['cv']['within025']:.1f}%、正解サイズの確率の平均 {S['cv']['p_true']:.1f}%。
   単独では {'、'.join(f"{nm} MAE {c['MAE_mm']:.3f}mm" for nm, c in S['member_cv'].items())}
 
@@ -188,6 +188,8 @@ with st.expander('モデルの詳細と注意事項'):
 同じ分割を再現して{nb['notebook_output_note']}と比べたのが下の表です。
 予測Vaultは{_nb_match('vault')}。{CUT} 超の確率（ノートブックのモデル。アプリはその 1 − 確率の平均を表示）は、
 LogReg が{_nb_match('high')}。SVM_RBF も{_nb_match('svm')}。{NL}に入る確率（セル22 LogReg）は{_nb_match('narrow')}。正しいサイズの確率（セル30 アンサンブル）は{_nb_match('size')}。
+正しいサイズの照合だけは、ノートブックと同じく確率分布の中央値（小さいサイズから足して 50% に達するサイズ）を
+予測サイズにしています（アプリの★と上の性能は、確率が最も高いサイズで計算しています）。
 """)
     _groups = {'vault_train_cv': '予測Vault・訓練群CV', 'vault_holdout': '予測Vault・ホールドアウト',
                'high_train_cv': f'{CUT} 超 LogReg・訓練群CV', 'high_holdout': f'{CUT} 超 LogReg・ホールドアウト',
