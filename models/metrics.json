@@ -1,5 +1,5 @@
 {
-  "created": "2026-11-05 16:33:50",
+  "created": "2026-11-06 14:07:44",
   "data_file": "IPCL9.xlsx",
   "n_eyes": 278,
   "n_patients": 142,
@@ -12,7 +12,9 @@
     "pandas": "2.3.3",
     "scipy": "1.16.3",
     "scikit-learn": "1.7.2",
-    "joblib": "1.5.2"
+    "joblib": "1.5.2",
+    "xgboost": "3.2.0",
+    "catboost": "1.2.10"
   },
   "notebook_split": {
     "n_train": 221,
@@ -89,11 +91,28 @@
       "sens": 80.0,
       "spec": 54.761904761904766
     },
+    "size_train_cv": {
+      "n": 221,
+      "MAE_mm": 0.14819004524886878,
+      "exact": 48.86877828054298,
+      "within025": 92.76018099547511,
+      "logloss": 1.2676858237926187,
+      "p_true": 35.678953895960305
+    },
+    "size_holdout": {
+      "n": 57,
+      "MAE_mm": 0.14035087719298245,
+      "exact": 50.877192982456144,
+      "within025": 92.98245614035088,
+      "logloss": 1.1071326340185583,
+      "p_true": 39.552495790211985
+    },
     "matches_notebook_output": {
       "vault": false,
       "high": true,
       "svm": true,
-      "narrow": false
+      "narrow": false,
+      "size": true
     },
     "notebook_output": {
       "vault_train_cv": {
@@ -138,6 +157,18 @@
         "AUC": 0.705,
         "sens": 80.0,
         "spec": 54.8
+      },
+      "size_train_cv": {
+        "MAE_mm": 0.148,
+        "exact": 48.869,
+        "within025": 92.76,
+        "logloss": 1.268,
+        "p_true": 35.679
+      },
+      "size_holdout": {
+        "MAE_mm": 0.14,
+        "exact": 50.877,
+        "within025": 92.982
       }
     },
     "notebook_output_note": "全データ.ipynb 2026-10-30 実行時の出力（2026-11-01 に c400_600・Vault を修正する前の IPCL9.xlsx）"
@@ -180,11 +211,6 @@
     ],
     "target": "Vault2 (mm)",
     "params": "RobustScaler → 平均[SVR(C=1.0, epsilon=0.05, kernel=\"linear\"), Ridge(alpha=1.0), LinearRegression]",
-    "members": [
-      "SVR (Linear)",
-      "Ridge",
-      "MLR"
-    ],
     "member_coef": {
       "SVR (Linear)": {
         "LV": -0.11428808436355331,
@@ -237,10 +263,6 @@
     "cut_mm": 0.75,
     "trained_as": "ノートブック セル31 と同じく Vault2 > 0.75 を陽性として学習し、1 − その確率（= Vault2 ≤ 0.75 の確率）を表示",
     "params": "RobustScaler → 平均[LogisticRegression(C=1.0, max_iter=1000), SVC(C=1.0, kernel=\"rbf\", gamma=0.03, class_weight=\"balanced\", probability=True)]",
-    "members": [
-      "LogReg",
-      "SVM_RBF"
-    ],
     "member_cv": {
       "LogReg": {
         "n": 278,
@@ -309,6 +331,60 @@
       "size": -0.5701612411031146,
       "ACW": -0.22564954782833913,
       "age": 0.3408126104348172
+    }
+  },
+  "p_size": {
+    "name": "Ensemble (多項ロジスティック + XGBoost + CatBoost)",
+    "features": [
+      "ACW",
+      "LV",
+      "ACD",
+      "age",
+      "gap"
+    ],
+    "K": 4,
+    "target": "段階 =（正しいサイズ − ACW より大きい最小サイズ）/ 0.25（0〜4）",
+    "params": "RobustScaler → 平均[LogisticRegression(C=1.0, max_iter=2000), XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.05, subsample=0.8, colsample_bytree=0.8), CatBoostClassifier(iterations=100, depth=3, learning_rate=0.05, l2_leaf_reg=3.0)]",
+    "stage_counts": {
+      "0": 41,
+      "1": 137,
+      "2": 72,
+      "3": 23,
+      "4": 5
+    },
+    "cv": {
+      "n": 278,
+      "MAE_mm": 0.1447841726618705,
+      "exact": 51.438848920863315,
+      "within025": 91.36690647482014,
+      "logloss": 1.2308670882688095,
+      "p_true": 36.617238450547234
+    },
+    "member_cv": {
+      "多項ロジスティック": {
+        "n": 278,
+        "MAE_mm": 0.14298561151079137,
+        "exact": 50.0,
+        "within025": 93.5251798561151,
+        "logloss": 1.2329885976789114,
+        "p_true": 36.51536190523247
+      },
+      "XGBoost": {
+        "n": 278,
+        "MAE_mm": 0.1528776978417266,
+        "exact": 48.92086330935252,
+        "within025": 90.64748201438849,
+        "logloss": 1.2994322719674303,
+        "p_true": 37.57665797352918
+      },
+      "CatBoost": {
+        "n": 278,
+        "MAE_mm": 0.14568345323741008,
+        "exact": 51.07913669064749,
+        "within025": 91.36690647482014,
+        "logloss": 1.227078007826094,
+        "p_true": 35.759695472880075
+      }
     }
   }
 }

@@ -1,6 +1,6 @@
 """
 IPCL Vault 予測アプリ（予測Vault: アンサンブル / 750µm 以下の確率: LogReg と SVM のアンサンブル /
-                      400〜600µm に入る確率: ロジスティック回帰）
+                      400〜600µm に入る確率: ロジスティック回帰 / 正しいサイズの確率: アンサンブル）
 ==========================================================================================
 Streamlit Cloud: Main file path に streamlit_app.py を指定してデプロイ
       （手元で試すなら  python -m streamlit run streamlit_app.py ）
@@ -34,7 +34,7 @@ except FileNotFoundError:
              f'train_model.py（または retrain）を実行して作成してください。')
     st.stop()
 
-if 'member_cv' not in B.get('p_within', {}) or 'p_narrow' not in B:   # 確率モデルがそろう前の pkl は古い形式
+if 'member_cv' not in B.get('p_within', {}) or 'p_narrow' not in B or 'p_size' not in B:   # モデルがそろう前の pkl
     st.error('models/ipcl_vault_bundle.pkl が古い形式です（現在の確率モデルが入っていません）。'
              'streamlit_app.py と同じ時に作った models/ipcl_vault_bundle.pkl に差し替えてください。')
     st.stop()
@@ -44,6 +44,7 @@ HL = prob_label(B)                       # 例: '750µm 以下'
 CUT = f"{P['cut_mm'] * 1000:.0f}µm"      # 例: '750µm'
 N = B['p_narrow']
 NL = narrow_label(B)                     # 例: '400〜600µm'
+S = B['p_size']
 
 # ============================================================
 # ヘッダー
@@ -52,12 +53,15 @@ st.title('👁️ IPCL Vault Predictor')
 st.caption(f'術前の測定値から、ACW より大きい最小の ICL サイズから {N_STEPS} サイズについて、'
            'アンサンブル（SVR・Ridge・重回帰の平均）による**予測Vault**と、'
            f'ロジスティック回帰と SVM の平均による **Vault が {CUT} 以下になる確率**、'
-           f'ロジスティック回帰による **Vault が {NL} に入る確率**を表示します')
+           f'ロジスティック回帰による **Vault が {NL} に入る確率**、'
+           'アンサンブル（多項ロジスティック・XGBoost・CatBoost の平均）による **正しいサイズの確率**を表示します')
 st.markdown(
     f"**学習データ**: 全症例 {B['n_eyes']}眼 / {B['n_patients']}人 ・ "
     f"**予測Vault**: {V['name']}（誤差の目安 RMSE {V['cv']['RMSE'] * 1000:.0f}µm / MAE {V['cv']['MAE'] * 1000:.0f}µm） ・ "
     f"**{HL}の確率**: {P['name']}（AUC {P['cv']['AUC']:.2f}） ・ "
-    f"**{NL}に入る確率**: {N['name']}（AUC {N['cv']['AUC']:.2f}）"
+    f"**{NL}に入る確率**: {N['name']}（AUC {N['cv']['AUC']:.2f}） ・ "
+    f"**正しいサイズの確率**: アンサンブル（予測と正しいサイズの差 MAE {S['cv']['MAE_mm']:.2f}mm・"
+    f"完全一致 {S['cv']['exact']:.0f}%）"
 )
 
 # 学習時と実行時のライブラリのバージョン違いを検出（pickle の互換性の問題を切り分けやすくする）
@@ -123,7 +127,9 @@ if st.button('予測する', type='primary'):
                f"（{CUT} ちょうどを含みます。250µm 未満の低い Vault も「以下」に入ります）、"
                f"交差検証で決めた判定の目安（Youden 閾値）は {P['cv']['threshold'] * 100:.0f}% です。"
                f"{NL}に入る確率の目安: 学習データ全体で {NL} に入ったのは {N['cv']['prevalence']:.0f}%"
-               f"（{NL.replace('〜', '・')} ちょうどを含みます）、Youden 閾値は {N['cv']['threshold'] * 100:.0f}% です。")
+               f"（{NL.replace('〜', '・')} ちょうどを含みます）、Youden 閾値は {N['cv']['threshold'] * 100:.0f}% です。"
+               "正しいサイズの確率: 5 サイズの合計が 100% で、★ は小さいサイズから確率を足して 50% に達するサイズ"
+               "（確率分布の中央値）です。")
     for col, (name, _, name_en) in zip(st.columns(len(eyes)), eyes):
         with col:
             st.subheader(f'{name} の結果')
@@ -132,6 +138,7 @@ if st.button('予測する', type='primary'):
             sizes = res['sizes']
             st.markdown(f"ACW {v['ACW']:.2f} mm → **{sizes[0]:.2f}〜{sizes[-1]:.2f} mm** の {len(sizes)} サイズ")
             st.dataframe(res['table'], hide_index=True)
+            st.markdown(f"正しいサイズの予測（確率分布の中央値）: **{res['size_pick']:.2f} mm**")
             for w in res['warnings']:
                 st.warning(w)
             fig = make_figure(res, name_en)
@@ -171,19 +178,26 @@ with st.expander('モデルの詳細と注意事項'):
 - **{NL}に入る確率** — {N['params']}（ノートブック セル22 ①狭義。目的変数 {N['target']}）：AUC {N['cv']['AUC']:.3f}、
   Brier {N['cv']['Brier']:.3f}、Youden 閾値 {N['cv']['threshold'] * 100:.0f}% で感度 {N['cv']['sens']:.0f}% /
   特異度 {N['cv']['spec']:.0f}%
+- **正しいサイズの確率** — {S['params']}（ノートブック セル30。目的変数 {S['target']}、特徴量 {', '.join(S['features'])}。
+  gap = ACW より大きい最小サイズ − ACW）：予測（確率分布の中央値）と正しいサイズの差 MAE {S['cv']['MAE_mm']:.3f}mm、
+  完全一致 {S['cv']['exact']:.1f}%、±0.25mm 以内 {S['cv']['within025']:.1f}%、正解サイズの確率の平均 {S['cv']['p_true']:.1f}%。
+  単独では {'、'.join(f"{nm} MAE {c['MAE_mm']:.3f}mm" for nm, c in S['member_cv'].items())}
 
 **参考：ノートブックとの照合**（最終モデルには使っていません）: ノートブックは訓練群（{nb['n_train']}眼）で学習し、
 ホールドアウト群（{nb['n_holdout']}眼）で検証しています。学習の手順がノートブックと同じであることを確かめるため、
 同じ分割を再現して{nb['notebook_output_note']}と比べたのが下の表です。
 予測Vaultは{_nb_match('vault')}。{CUT} 超の確率（ノートブックのモデル。アプリはその 1 − 確率の平均を表示）は、
-LogReg が{_nb_match('high')}。SVM_RBF も{_nb_match('svm')}。{NL}に入る確率（セル22 LogReg）は{_nb_match('narrow')}。
+LogReg が{_nb_match('high')}。SVM_RBF も{_nb_match('svm')}。{NL}に入る確率（セル22 LogReg）は{_nb_match('narrow')}。正しいサイズの確率（セル30 アンサンブル）は{_nb_match('size')}。
 """)
     _groups = {'vault_train_cv': '予測Vault・訓練群CV', 'vault_holdout': '予測Vault・ホールドアウト',
                'high_train_cv': f'{CUT} 超 LogReg・訓練群CV', 'high_holdout': f'{CUT} 超 LogReg・ホールドアウト',
                'svm_train_cv': f'{CUT} 超 SVM_RBF・訓練群CV', 'svm_holdout': f'{CUT} 超 SVM_RBF・ホールドアウト',
-               'narrow_train_cv': f'{NL} LogReg・訓練群CV', 'narrow_holdout': f'{NL} LogReg・ホールドアウト'}
+               'narrow_train_cv': f'{NL} LogReg・訓練群CV', 'narrow_holdout': f'{NL} LogReg・ホールドアウト',
+               'size_train_cv': '正しいサイズ・訓練群CV', 'size_holdout': '正しいサイズ・ホールドアウト'}
     _metric = {'R2': 'R²', 'RMSE': 'RMSE (mm)', 'MAE': 'MAE (mm)', 'AUC': 'AUC',
-               'threshold': 'Youden 閾値', 'sens': '感度 (%)', 'spec': '特異度 (%)'}
+               'threshold': 'Youden 閾値', 'sens': '感度 (%)', 'spec': '特異度 (%)',
+               'MAE_mm': 'MAE (mm)', 'exact': '完全一致 (%)', 'within025': '±0.25mm 以内 (%)',
+               'logloss': 'LogLoss', 'p_true': '正解サイズの確率の平均 (%)'}
     st.dataframe(pd.DataFrame([
         {'区分': g, '指標': _metric[m], '同じ分割で再現': round(nb[k][m], 4), 'ノートブックの出力': ref}
         for k, g in _groups.items() for m, ref in nb['notebook_output'][k].items()
@@ -196,8 +210,13 @@ SVM は非線形のため係数はありません）が、
 {NL}に入る確率も別に学習したモデルで、LogReg（線形）のため、サイズに対して一方向にしか変化しません
 （係数 size {N['coef']['size']:+.2f}：サイズを大きくすると{'上がり' if N['coef']['size'] > 0 else '下がり'}ます）。
 
+**正しいサイズの確率について**: 「正しいサイズ」は、術後 Vault などをふまえて判定した、本来選ぶべきサイズです。
+表示する 5 サイズそれぞれが「正しいサイズ」である確率で、合計は 100% です（Vault が特定の範囲に入る確率ではありません）。
+学習データでは、ACW より大きい最小サイズから {'・'.join(f"+{0.25 * a:.2f}mm が {b}眼" for a, b in S['stage_counts'].items())} でした。
+
 ---
 ⚠️ **本アプリは研究目的の参考情報です。** 予測Vaultの誤差は RMSE で {V['cv']['RMSE'] * 1000:.0f}µm、MAE で {V['cv']['MAE'] * 1000:.0f}µm 程度あり、
 {HL}の確率の判別能は AUC {P['cv']['AUC']:.2f}、{NL}に入る確率は AUC {N['cv']['AUC']:.2f} です。
+正しいサイズの予測が実際の正しいサイズと一致したのは {S['cv']['exact']:.0f}%（±0.25mm 以内は {S['cv']['within025']:.0f}%）です。
 最終的なレンズ選択は必ず医師の判断で行ってください。
 """)

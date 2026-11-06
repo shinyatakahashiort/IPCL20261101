@@ -1,6 +1,6 @@
 """
-予測Vault（アンサンブル）・750µm 以下の確率（LogReg と SVM のアンサンブル）・400〜600µm に入る確率（LogReg）の
-最終モデルを学習し、
+予測Vault（アンサンブル）・750µm 以下の確率（LogReg と SVM のアンサンブル）・400〜600µm に入る確率（LogReg）・
+正しいサイズの確率（アンサンブル）の最終モデルを学習し、
 models/ipcl_vault_bundle.pkl と models/metrics.json を作成する
 =====================================================================
 データ : IPCL9.xlsx（既定はこのフォルダ。--data で指定可）
@@ -17,7 +17,12 @@ models/ipcl_vault_bundle.pkl と models/metrics.json を作成する
          - 400〜600µm の確率: セル22 ①狭義（c400_600）の LogReg
                                RobustScaler → LogisticRegression(C=1.0, max_iter=1000)
                                目的変数 c400_600 == 1（Vault 400〜600µm。400・600µm ちょうどを含む）、欠測のある眼は除外
-         - 特徴量（共通）    : LV, ACD, size, ACW, age
+         - 特徴量（上の3つ） : LV, ACD, size, ACW, age
+         - 正しいサイズの確率: セル30 のアンサンブル（多項ロジスティック＋多クラス XGBoost＋多クラス CatBoost の確率の平均）
+                               各モデルは RobustScaler → 分類器。目的変数は段階 =（正しいサイズ − ACW より大きい
+                               最小サイズ）/ 0.25（0 未満は 0）。特徴量 ACW, LV, ACD, age, gap（= 最小サイズ − ACW）
+                               XGBoost・CatBoost は学習後に木だけを取り出して numpy で計算する形に置き換え、
+                               元のモデルと確率が一致することを確かめてから保存する（アプリに xgboost・catboost は不要）
 評価   : 患者単位 LOOCV（Leave-One-Patient-Out）
          両眼データのため、同じ患者の左右眼は必ず同じ側（学習 or 検証）に入れる
 確認   : ノートブック セル17 と同じ訓練群 / ホールドアウト群の分割を再現し、
@@ -39,6 +44,7 @@ import json
 import os
 import pickle
 import sys
+import tempfile
 import warnings
 from datetime import datetime
 
@@ -55,17 +61,28 @@ from sklearn.model_selection import LeaveOneGroupOut, StratifiedGroupKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
 from sklearn.svm import SVC, SVR
+try:
+    from catboost import CatBoostClassifier
+    from xgboost import XGBClassifier
+except Exception as e:   # xgboost は Mac で OpenMP（libomp）が無いと読み込めない
+    raise SystemExit(f'xgboost / catboost を読み込めません（{e.__class__.__name__}: {str(e).strip().splitlines()[0]}）。\n'
+                     '学習には requirements-train.txt のライブラリが必要です。Mac では xgboost のために\n'
+                     '`brew install libomp` が必要なことがあります（Anaconda の環境なら不要です）。')
 
-from ipcl_vault_predict import DEFAULT_BUNDLE, FEATURES, HERE
+from ipcl_vault_predict import (DEFAULT_BUNDLE, FEATURES, HERE, SIZE_FEATURES, CatTrees, ScaledModel, StepClassifier,
+                                XGBTrees, lower_size, median_step, size_features)
 
 SEED = 2025              # ノートブック セル4 の GLOBAL_SEED と同じ
 HOLDOUT_RATIO = 0.2      # ノートブック セル17 と同じ
-NUMERIC_COLS = ['age', 'LV', 'ACD', 'ACW', 'size', 'Vault2', 'c400_600']
+NUMERIC_COLS = ['age', 'LV', 'ACD', 'ACW', 'size', 'Vault2', 'c400_600', '正しいサイズ']
 HIGH_CUT = 0.75         # ノートブック セル31 high075: Vault2 > 0.75 を陽性
 HIGH_LABEL = f'{HIGH_CUT * 1000:.0f}µm 超'
 WITHIN_LABEL = f'{HIGH_CUT * 1000:.0f}µm 以下'   # アプリで表示する確率（= 1 − HIGH_LABEL の確率）
 NARROW_MM = (0.40, 0.60)  # ノートブック セル22 ①狭義: c400_600 == 1（0 = 400µm 未満, 1 = 400〜600µm, 2 = 600µm 超）
 NARROW_LABEL = f'{NARROW_MM[0] * 1000:.0f}〜{NARROW_MM[1] * 1000:.0f}µm'
+SIZE_TARGET = '正しいサイズ'                       # 術後 Vault などをふまえて判定した、本来選ぶべきサイズ
+SIZE_BASE_FEATURES = ['ACW', 'LV', 'ACD', 'age']   # セル24 の CS_FEATURES（セル30 はこれに gap を加える）
+SIZE_MEMBERS = ['多項ロジスティック', 'XGBoost', 'CatBoost']   # セル30 の CV MAE 上位3（アンサンブルの構成）
 REQUIRED_COLS = ['ID', 'RL'] + NUMERIC_COLS
 
 
@@ -119,6 +136,17 @@ def narrow_xy(frame):
     return frame[FEATURES], (frame['c400_600'] == 1).astype(int).to_numpy(), frame['pid'].to_numpy()
 
 
+def size_frame(frame):
+    """セル30 の sc_prepare と同じ: 欠測のある眼を除き、段階 =（正しいサイズ − ACW より大きい最小サイズ）/ 0.25
+    （正しいサイズ ≤ ACW の眼は段階 0 に丸める）"""
+    cols = list(dict.fromkeys(SIZE_BASE_FEATURES + ['ACW', SIZE_TARGET, 'pid']))
+    d = frame[cols].dropna().reset_index(drop=True)
+    d['low'] = [lower_size(a) for a in d['ACW']]
+    d['gap'] = d['low'] - d['ACW']
+    d['step'] = np.clip(np.round((d[SIZE_TARGET] - d['low']) / 0.25), 0, None).astype(int)
+    return d
+
+
 # ============================================================
 # モデル（ノートブック セル20・セル31 と同じ設定）
 # ============================================================
@@ -154,6 +182,104 @@ def make_prob_ensemble():
     return Pipeline([('scaler', RobustScaler()),
                      ('model', VotingClassifier([('logreg', make_logreg()['model']), ('svm', make_svm()['model'])],
                                                 voting='soft'))])
+
+
+def size_bases():
+    """セル30 と同じ設定の3モデル（StepClassifier の中で RobustScaler → 分類器 になる）"""
+    return {'多項ロジスティック': LogisticRegression(C=1.0, max_iter=2000),
+            'XGBoost': XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.05, subsample=0.8,
+                                     colsample_bytree=0.8, reg_lambda=1.0, random_state=SEED, verbosity=0, n_jobs=-1),
+            'CatBoost': CatBoostClassifier(iterations=100, depth=3, learning_rate=0.05, l2_leaf_reg=3.0,
+                                           loss_function='MultiClass', random_seed=SEED, verbose=0,
+                                           allow_writing_files=False)}
+
+
+def size_fit(d, k):
+    """3モデルをそれぞれ学習（アンサンブル = 確率の平均）"""
+    return {nm: StepClassifier(base, k).fit(d[SIZE_FEATURES], d['step'].to_numpy())
+            for nm, base in size_bases().items()}
+
+
+def size_oof(d, k):
+    """3モデルそれぞれの患者単位 LOOCV の out-of-fold 確率（段階 0〜k）"""
+    X, y, g = d[SIZE_FEATURES], d['step'].to_numpy(), d['pid'].to_numpy()
+    P = {nm: np.zeros((len(d), k + 1)) for nm in SIZE_MEMBERS}
+    for tr, te in LeaveOneGroupOut().split(X, y, groups=g):
+        for nm, m in size_fit(d.iloc[tr], k).items():
+            P[nm][te] = m.predict_proba(X.iloc[te])
+    return P
+
+
+def xgb_to_trees(clf, Xs):
+    """学習済み XGBClassifier（多クラス）の木を XGBTrees に取り出す。base_margin は XGBoost の margin 出力と
+    木の葉の合計の差から求める（版によって base_score の持ち方が違うため）"""
+    m = json.loads(clf.get_booster().save_raw('json'))
+    model, n_class = m['learner']['gradient_booster']['model'], int(m['learner']['learner_model_param']['num_class'])
+    trees = [{'left': np.array(t['left_children'], dtype=int), 'right': np.array(t['right_children'], dtype=int),
+              'feat': np.array(t['split_indices'], dtype=int),
+              'thr': np.array(t['split_conditions'], dtype=np.float32),    # 葉では葉の値
+              'leaf': np.array(t['split_conditions'], dtype=np.float32),
+              'default_left': np.array(t['default_left'], dtype=bool)} for t in model['trees']]
+    out = XGBTrees(trees, model['tree_info'], np.zeros(n_class), n_class)
+    gap = clf.predict(Xs, output_margin=True) - out.leaf_sum(Xs)
+    if np.ptp(gap, axis=0).max() > 1e-5:
+        raise SystemExit('XGBoost の木の取り出しに失敗しました（base_margin が一定になりません）')
+    out.base_margin = gap.mean(axis=0)
+    return out
+
+
+def cat_to_trees(clf):
+    """学習済み CatBoostClassifier（多クラス・対称木）の木を CatTrees に取り出す"""
+    with tempfile.TemporaryDirectory() as tmp:
+        f = os.path.join(tmp, 'catboost.json')
+        clf.save_model(f, format='json')
+        with open(f, encoding='utf-8') as fh:
+            m = json.load(fh)
+    scale, bias = m['scale_and_bias']
+    if any(sp['split_type'] != 'FloatFeature' for t in m['oblivious_trees'] for sp in t['splits']):
+        raise SystemExit('CatBoost の木に数値以外の分岐があり、取り出せません')
+    return CatTrees([np.array([sp['float_feature_index'] for sp in t['splits']], dtype=int) for t in m['oblivious_trees']],
+                    [np.array([sp['border'] for sp in t['splits']], dtype=np.float32) for t in m['oblivious_trees']],
+                    [np.array(t['leaf_values'], dtype=float).reshape(-1, len(bias)) for t in m['oblivious_trees']],
+                    scale, bias)
+
+
+def compact_size_member(m, X_check):
+    """StepClassifier の中の XGBoost / CatBoost を木だけのモデルに置き換え、予測が元と一致するか確かめる
+    （多項ロジスティックはそのまま。どれも未学習の元の設定 base は保存しない）"""
+    out = StepClassifier(None, m.k)
+    out.present_ = m.present_
+    scaler, clf = m.model_[0], m.model_[-1]
+    if isinstance(clf, XGBClassifier):
+        out.model_ = ScaledModel(scaler, xgb_to_trees(clf, scaler.transform(X_check)))
+    elif isinstance(clf, CatBoostClassifier):
+        out.model_ = ScaledModel(scaler, cat_to_trees(clf))
+    else:
+        out.model_ = m.model_
+    diff = float(np.abs(out.predict_proba(X_check) - m.predict_proba(X_check)).max())
+    if diff > 1e-6:
+        raise SystemExit(f'{type(clf).__name__} を木だけの形にした予測が元と一致しません（最大差 {diff:.2e}）')
+    return out, diff
+
+
+def random_size_inputs(df, n):
+    """確認用: アプリで入力できる範囲（学習データの範囲 ± 幅の50%、年齢 10〜90歳）の乱数入力"""
+    rng = np.random.default_rng(SEED)
+    v = {}
+    for c in ['ACW', 'LV', 'ACD']:
+        lo, hi = float(df[c].min()), float(df[c].max())
+        v[c] = rng.uniform(lo - (hi - lo) * 0.5, hi + (hi - lo) * 0.5, n)
+    return size_features(v['ACW'], v['LV'], v['ACD'], rng.integers(10, 91, n).astype(float))
+
+
+def size_metrics(d, P, k):
+    """セル30 の sc_metrics と同じ: 予測サイズ（確率分布の中央値）と正しいサイズの差など"""
+    step_true = np.clip(d['step'].to_numpy(), 0, k)
+    err = np.abs(d['low'].to_numpy() + 0.25 * median_step(P) - d[SIZE_TARGET].to_numpy())
+    pt = np.clip(P[np.arange(len(d)), step_true], 1e-15, 1)
+    return {'n': int(len(d)), 'MAE_mm': float(err.mean()), 'exact': float((err < 1e-6).mean() * 100),
+            'within025': float((err <= 0.25 + 1e-6).mean() * 100), 'logloss': float(-np.log(pt).mean()),
+            'p_true': float(pt.mean() * 100)}
 
 
 def compact_linear_ensemble(pipe):
@@ -209,7 +335,7 @@ def cls_metrics(y, p, thr=None):
 
 
 # ============================================================
-# ノートブックの訓練群 / ホールドアウト群で再現確認（セル17・20・22・31）
+# ノートブックの訓練群 / ホールドアウト群で再現確認（セル17・20・22・30・31）
 # ============================================================
 NOTEBOOK_OUTPUT_NOTE = '全データ.ipynb 2026-10-30 実行時の出力（2026-11-01 に c400_600・Vault を修正する前の IPCL9.xlsx）'
 NOTEBOOK_OUTPUT = {   # NOTEBOOK_OUTPUT_NOTE の出力（セル20 Ensemble・セル31 Vault > 0.75mm の LogReg / SVM_RBF・セル22 ①狭義 LogReg）
@@ -221,8 +347,11 @@ NOTEBOOK_OUTPUT = {   # NOTEBOOK_OUTPUT_NOTE の出力（セル20 Ensemble・セ
     'svm_holdout': {'AUC': 0.662, 'sens': 62.5, 'spec': 57.6},
     'narrow_train_cv': {'AUC': 0.700, 'threshold': 0.23, 'sens': 86.4, 'spec': 50.3},
     'narrow_holdout': {'AUC': 0.705, 'sens': 80.0, 'spec': 54.8},
+    'size_train_cv': {'MAE_mm': 0.148, 'exact': 48.869, 'within025': 92.760, 'logloss': 1.268, 'p_true': 35.679},
+    'size_holdout': {'MAE_mm': 0.140, 'exact': 50.877, 'within025': 92.982},
 }
-NOTEBOOK_DECIMALS = {'R2': 4, 'RMSE': 4, 'MAE': 4, 'AUC': 3, 'threshold': 2, 'sens': 1, 'spec': 1}   # ノートブックの表示桁
+NOTEBOOK_DECIMALS = {'R2': 4, 'RMSE': 4, 'MAE': 4, 'AUC': 3, 'threshold': 2, 'sens': 1, 'spec': 1,   # ノートブックの表示桁
+                     'MAE_mm': 3, 'exact': 3, 'within025': 3, 'logloss': 3, 'p_true': 3}
 
 
 def notebook_split_check(df):
@@ -241,6 +370,10 @@ def notebook_split_check(df):
     p_cv = cls_metrics(yp, lopo_oof(make_logreg, Xp, yp, gp, proba=True))
     s_cv = cls_metrics(yp, lopo_oof(make_svm, Xp, yp, gp, proba=True))
     n_cv = cls_metrics(yn, lopo_oof(make_logreg, Xn, yn, gn, proba=True))
+    s_tr, s_ho = size_frame(d_tr), size_frame(d_ho)
+    k = int(s_tr['step'].max())
+    P_cv = np.mean(list(size_oof(s_tr, k).values()), axis=0)
+    P_ho = np.mean([m.predict_proba(s_ho[SIZE_FEATURES]) for m in size_fit(s_tr, k).values()], axis=0)
     res = {
         'n_train': int(len(d_tr)), 'n_holdout': int(len(d_ho)),
         'patients_train': int(d_tr['pid'].nunique()), 'patients_holdout': int(d_ho['pid'].nunique()),
@@ -254,6 +387,8 @@ def notebook_split_check(df):
         'narrow_train_cv': n_cv,
         'narrow_holdout': cls_metrics(yn_ho, make_logreg().fit(Xn, yn).predict_proba(Xn_ho)[:, 1],
                                       thr=n_cv['threshold']),
+        'size_train_cv': size_metrics(s_tr, P_cv, k),
+        'size_holdout': size_metrics(s_ho, P_ho, k),
     }
 
     print('\n' + '=' * 70)
@@ -262,14 +397,16 @@ def notebook_split_check(df):
     print(f"  訓練群 {res['n_train']}眼 / {res['patients_train']}人   "
           f"ホールドアウト {res['n_holdout']}眼 / {res['patients_holdout']}人")
     print(f'  比較対象: {NOTEBOOK_OUTPUT_NOTE}')
-    ok = {'vault': True, 'high': True, 'svm': True, 'narrow': True}
+    ok = {'vault': True, 'high': True, 'svm': True, 'narrow': True, 'size': True}
     for key, cols in [('vault_train_cv', ['R2', 'RMSE', 'MAE']), ('vault_holdout', ['R2', 'RMSE', 'MAE']),
                       ('high_train_cv', ['AUC', 'threshold', 'sens', 'spec']),
                       ('high_holdout', ['AUC', 'sens', 'spec']),
                       ('svm_train_cv', ['AUC', 'threshold', 'sens', 'spec']),
                       ('svm_holdout', ['AUC', 'sens', 'spec']),
                       ('narrow_train_cv', ['AUC', 'threshold', 'sens', 'spec']),
-                      ('narrow_holdout', ['AUC', 'sens', 'spec'])]:
+                      ('narrow_holdout', ['AUC', 'sens', 'spec']),
+                      ('size_train_cv', ['MAE_mm', 'exact', 'within025', 'logloss', 'p_true']),
+                      ('size_holdout', ['MAE_mm', 'exact', 'within025'])]:
         line = []
         for c in cols:
             ref, got = NOTEBOOK_OUTPUT[key][c], res[key][c]
@@ -280,7 +417,8 @@ def notebook_split_check(df):
         print(f'  {key:<15} ' + '  '.join(line))
     for k, lbl in [('vault', '予測Vault'), ('high', f'{HIGH_LABEL}の確率 LogReg（ノートブックのモデル）'),
                    ('svm', f'{HIGH_LABEL}の確率 SVM_RBF（ノートブックのモデル）'),
-                   ('narrow', f'{NARROW_LABEL}の確率 LogReg（セル22）')]:
+                   ('narrow', f'{NARROW_LABEL}の確率 LogReg（セル22）'),
+                   ('size', '正しいサイズの確率 アンサンブル（セル30）')]:
         print(f"  → {lbl}: {'✅ ノートブックの出力と一致' if ok[k] else '⚠️ ノートブックの出力と異なります（データが更新された場合はノートブックの再実行が必要）'}")
     res['matches_notebook_output'] = {k: bool(v) for k, v in ok.items()}
     res['notebook_output'] = NOTEBOOK_OUTPUT
@@ -297,7 +435,7 @@ def main():
     except AttributeError:
         pass
     ap = argparse.ArgumentParser(description=f'IPCL 予測Vault（アンサンブル）/ {WITHIN_LABEL}の確率（LogReg + SVM）/ '
-                                             f'{NARROW_LABEL}の確率（LogReg）の学習')
+                                             f'{NARROW_LABEL}の確率（LogReg）/ 正しいサイズの確率（アンサンブル）の学習')
     ap.add_argument('--data', default=os.path.join(HERE, 'IPCL9.xlsx'))
     ap.add_argument('--out', default=DEFAULT_BUNDLE)
     a = ap.parse_args()
@@ -308,7 +446,8 @@ def main():
 
     df = load_data(a.data)
     print('=' * 70)
-    print(f'IPCL 予測Vault（アンサンブル）/ {WITHIN_LABEL}の確率（LogReg + SVM）/ {NARROW_LABEL}の確率（LogReg）の学習')
+    print(f'IPCL 予測Vault（アンサンブル）/ {WITHIN_LABEL}の確率（LogReg + SVM）/ {NARROW_LABEL}の確率（LogReg）/ '
+          f'正しいサイズの確率（アンサンブル）の学習')
     print('=' * 70)
     print(f'データ: {os.path.basename(a.data)}  {len(df)}眼 / {df["pid"].nunique()}人')
     print(f'特徴量: {FEATURES}')
@@ -330,6 +469,11 @@ def main():
     member_cv = {nm: cls_metrics(1 - yp, 1 - o) for nm, o in oof_m.items()}
     p_cv = cls_metrics(1 - yp, 1 - np.mean(list(oof_m.values()), axis=0))
     n_cv = cls_metrics(yn, lopo_oof(make_logreg, Xn, yn, gn, proba=True))
+    sd = size_frame(df)
+    size_k = int(sd['step'].max())
+    oof_s = size_oof(sd, size_k)
+    size_member_cv = {nm: size_metrics(sd, P, size_k) for nm, P in oof_s.items()}
+    size_cv = size_metrics(sd, np.mean(list(oof_s.values()), axis=0), size_k)
     print(f"  予測Vault Ensemble    : R²={v_cv['R2']:.3f}  RMSE={v_cv['RMSE'] * 1000:.0f}µm  "
           f"MAE={v_cv['MAE'] * 1000:.0f}µm  ±100µm以内={v_cv['within_100um']:.1f}%")
     for nm, c in {**member_cv, 'Ensemble': p_cv}.items():
@@ -339,6 +483,11 @@ def main():
     print(f"  {NARROW_LABEL}の確率 LogReg : AUC={n_cv['AUC']:.3f}  Brier={n_cv['Brier']:.3f}  "
           f"Youden閾値={n_cv['threshold']:.2f}（感度 {n_cv['sens']:.1f}% / 特異度 {n_cv['spec']:.1f}%）  "
           f"陽性割合={n_cv['prevalence']:.1f}%")
+    print(f'  正しいサイズ: {len(sd)}眼、段階（ACW より大きい最小サイズから何段階上か）の分布 '
+          f"{sd['step'].value_counts().sort_index().to_dict()}")
+    for nm, c in {**size_member_cv, 'アンサンブル': size_cv}.items():
+        print(f"  正しいサイズ {nm:<10}: MAE={c['MAE_mm']:.3f}mm  完全一致={c['exact']:.1f}%  "
+              f"±0.25mm以内={c['within025']:.1f}%  LogLoss={c['logloss']:.3f}  正解の平均確率={c['p_true']:.1f}%")
 
     ens_fitted = make_ensemble().fit(Xv, yv)
     ens = compact_linear_ensemble(ens_fitted)
@@ -360,6 +509,11 @@ def main():
     print(f'  確率のアンサンブル = LogReg と SVM_RBF の平均（個別に学習した平均との最大差 {diff:.1e}）。'
           f'SVM のサポートベクター {int(svm.n_support_.sum())}眼分が pkl に入ります')
     narrow = make_logreg().fit(Xn, yn)
+    size_models = {}
+    X_check = pd.concat([sd[SIZE_FEATURES], random_size_inputs(df, 20000)], ignore_index=True)
+    for nm, m in size_fit(sd, size_k).items():
+        size_models[nm], diff = compact_size_member(m, X_check)
+        print(f'  正しいサイズ {nm}: 保存する形と元のモデルの確率の最大差 {diff:.1e}（{len(X_check)}通りの入力で確認）')
     coef = {'vault_ensemble': dict(zip(FEATURES, map(float, ens['model'].coef_.ravel()))),
             'within_logreg': dict(zip(FEATURES, map(float, -logreg.coef_.ravel()))),
             'narrow_logreg': dict(zip(FEATURES, map(float, narrow['model'].coef_.ravel())))}
@@ -367,9 +521,11 @@ def main():
     for k, c in {**{f'  {nm}': c for nm, c in members.items()}, **coef}.items():
         print(f'    {k:<15} ' + '  '.join(f'{f}={v:+.4f}' for f, v in c.items()))
 
+    import catboost
     import joblib
     import scipy
     import sklearn
+    import xgboost
     bundle = {
         'created': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'data_file': os.path.basename(a.data),
@@ -381,7 +537,8 @@ def main():
                   'セル22（LogReg, c400_600）と同じ特徴量・前処理・設定',
         'versions': {'python': '.'.join(map(str, sys.version_info[:3])), 'numpy': np.__version__,
                      'pandas': pd.__version__, 'scipy': scipy.__version__,
-                     'scikit-learn': sklearn.__version__, 'joblib': joblib.__version__},
+                     'scikit-learn': sklearn.__version__, 'joblib': joblib.__version__,
+                     'xgboost': xgboost.__version__, 'catboost': catboost.__version__},
         'vault': {'model': ens, 'name': 'Ensemble (SVR (Linear) + Ridge + MLR)', 'features': FEATURES,
                   'target': 'Vault2 (mm)',
                   'params': 'RobustScaler → 平均[SVR(C=1.0, epsilon=0.05, kernel="linear"), Ridge(alpha=1.0), '
@@ -401,6 +558,15 @@ def main():
                      'target': f'c400_600 == 1（Vault {NARROW_LABEL}。{NARROW_LABEL.replace("〜", "・")} ちょうどを含む）',
                      'params': 'RobustScaler → LogisticRegression(C=1.0, max_iter=1000)',
                      'cv': n_cv, 'coef': coef['narrow_logreg']},
+        'p_size': {'members': size_models, 'name': 'Ensemble (多項ロジスティック + XGBoost + CatBoost)',
+                   'features': SIZE_FEATURES, 'K': size_k,
+                   'target': f'段階 =（{SIZE_TARGET} − ACW より大きい最小サイズ）/ 0.25（0〜{size_k}）',
+                   'params': 'RobustScaler → 平均[LogisticRegression(C=1.0, max_iter=2000), '
+                             'XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.05, subsample=0.8, '
+                             'colsample_bytree=0.8), CatBoostClassifier(iterations=100, depth=3, learning_rate=0.05, '
+                             'l2_leaf_reg=3.0)]',
+                   'stage_counts': {int(a): int(b) for a, b in sd['step'].value_counts().sort_index().items()},
+                   'cv': size_cv, 'member_cv': size_member_cv},
         'notebook_split': nb_check,
         # 入力チェック用の要約統計のみ（個票データは保存しない）
         'feature_ranges': {c: {'min': float(df[c].min()), 'max': float(df[c].max()),
@@ -411,9 +577,9 @@ def main():
     with open(a.out, 'wb') as f:
         pickle.dump(bundle, f)
 
-    metrics = {k: v for k, v in bundle.items() if k not in ('vault', 'p_within', 'p_narrow')}
-    for k in ('vault', 'p_within', 'p_narrow'):
-        metrics[k] = {kk: v for kk, v in bundle[k].items() if kk != 'model'}
+    metrics = {kk: v for kk, v in bundle.items() if kk not in ('vault', 'p_within', 'p_narrow', 'p_size')}
+    for kk in ('vault', 'p_within', 'p_narrow', 'p_size'):
+        metrics[kk] = {k2: v for k2, v in bundle[kk].items() if k2 not in ('model', 'members')}
     with open(os.path.join(os.path.dirname(a.out), 'metrics.json'), 'w', encoding='utf-8') as f:
         json.dump(metrics, f, ensure_ascii=False, indent=2)
 

@@ -5,3 +5,7 @@
 #
 -r requirements.txt
 openpyxl==3.1.5
+# 正しいサイズのモデル（学習時だけ使う。アプリには木だけを取り出して保存するので不要）
+# Mac で xgboost が読み込めないときは `brew install libomp`（Anaconda の環境なら不要）
+xgboost==3.2.0
+catboost==1.2.10
